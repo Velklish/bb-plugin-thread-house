@@ -1,5 +1,5 @@
 import { groupedRepository, type Repository, type RepositoryGroup } from "./model";
-import { folderKey, folderScope, moveOrder, type Preferences } from "./preferences";
+import { folderKey, folderScope, moveOrder, rank, type Preferences } from "./preferences";
 
 export interface FolderNode {
   id: string; projectId: string; label: string; repository: Repository | null;
@@ -61,9 +61,8 @@ export function buildFolderTree(groups: readonly RepositoryGroup[], available: r
       for (const child of node.children) { node.count += child.count; node.updatedAt = Math.max(node.updatedAt, child.updatedAt); }
     }
     const order = preferences.folderOrder[folderScope(projectId, parentId)] ?? [];
-    const rank = (id: string) => { const index = order.indexOf(id); return index < 0 ? Infinity : index; };
     nodes.sort((a, b) => Number(preferences.folderPins.includes(b.id)) - Number(preferences.folderPins.includes(a.id))
-      || rank(a.id) - rank(b.id) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+      || rank(order, a.id) - rank(order, b.id) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
   }
   rollup(roots, null);
   return roots;
@@ -86,7 +85,7 @@ export function moveFolder(preferences: Preferences, roots: readonly FolderNode[
   const scope = folderScope(node.projectId, parentId);
   const siblings = (parentId ? nodes.get(parentId)!.children : roots).filter(n => n.id !== id).map(n => n.id);
   const stored = preferences.folderOrder[scope] ?? [];
-  const order = position === "inside" ? [...new Set([...stored.filter(key => key !== id), ...siblings, id])]
+  const order = position === "inside" ? [...siblings.filter(key => !stored.includes(key)), ...stored.filter(key => key !== id), id]
     : moveOrder(stored, [...siblings, id], id, targetId, position === "after");
   return { ...preferences, folderParents, folderOrder: { ...preferences.folderOrder, [scope]: order } };
 }

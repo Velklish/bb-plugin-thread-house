@@ -57,4 +57,12 @@ describe("virtual folder tree", () => {
     expect(result.folderParents.b).toBeUndefined(); expect(result.threadFolders.thread).toBeUndefined();
     expect(result.folderPins).toEqual([]);
   });
+  it("shows a folder that appeared after a manual order ahead of it and keeps it there when a sibling moves", () => {
+    const folders = ["a", "b", "new"].map((id, i) => ({ ...group(), repository: { ...repository, id, label: id }, updatedAt: NOW + i }));
+    const [a, b, added] = folders.map(folderKey); const prefs = parsePreferences(null);
+    prefs.folderOrder.workspace = [a, b];
+    const roots = buildFolderTree(folders, folders, prefs, "workspace");
+    expect(roots.map(n => n.label)).toEqual(["new", "a", "b"]);
+    expect(moveFolder(prefs, roots, b, a, "before")!.folderOrder.workspace).toEqual([added, b, a]);
+  });
 });

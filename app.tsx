@@ -14,7 +14,7 @@ import { Input } from "./components/ui/input";
 import type { rpcContract, RepositoryState } from "./contracts";
 import { buildGroups, groupedRepository, repositoryLinks, type Period, type Repository, type ThreadNode } from "./model";
 import { FolderRow, type RowDrag } from "./folder-row";
-import { STORAGE_KEY, comparePins, effectiveFolderId, folderScope, moveOrder, orderedTree, readPreferences, siblingKey } from "./preferences";
+import { STORAGE_KEY, comparePins, effectiveFolderId, folderKey, folderScope, moveOrder, orderedTree, parsePreferences, readPreferences, siblingKey, threadFolderTarget } from "./preferences";
 import { buildFolderTree, moveFolder, removeFolder, type FolderNode, type DropPosition } from "./folders";
 import { buildSmartViews, type ActivitySummary } from "./smart-views";
 import { isTransientFailure } from "./network";
@@ -77,7 +77,7 @@ function useRepositoryData(threadIds: string[], environmentIds: string[], enviro
 type ListRow =
   | { kind: "heading"; key: string; label: string; subtitle?: string; depth: number; count: number; smart?: "input" | "recent" }
   | { kind: "folder"; key: string; node: FolderNode; depth: number }
-  | { kind: "thread"; key: string; node: ThreadNode; depth: number; groupRepositoryId: string | null; groupRepositoryLabel: string | null; folder: string; scope: string; peers: string[]; compact?: boolean; smart?: boolean; pinned?: boolean; summary?: ActivitySummary };
+  | { kind: "thread"; key: string; node: ThreadNode; depth: number; groupRepositoryId: string | null; groupRepositoryLabel: string | null; folder: string; scope: string; parentId?: string | null; compact?: boolean; smart?: boolean; pinned?: boolean; summary?: ActivitySummary };
 
 function ThreadRow({ node, depth, groupRepositoryId, groupRepositoryLabel, shortcutTarget, drag, restore, summary, expanded, branchCollapsed, toggle, active, onNavigate, repositories, onAssign, onPath, compact = false, enhanced = true }: {
   node: ThreadNode; depth: number; groupRepositoryId: string | null; expanded: boolean; branchCollapsed: boolean;
@@ -177,9 +177,20 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
   const envs = [...new Set(visibleThreads.flatMap(t => t.environment?.id ? [t.environment.id] : []))].sort();
   const paths = JSON.stringify([...new Map(threads.flatMap(t => t.environment?.id ? [[t.environment.id, t.environment.path] as const] : [])).entries()].sort(([a], [b]) => a.localeCompare(b)));
   const { rpc, state, error, refresh } = useRepositoryData(ids, envs, paths);
+  const adopted = useRef(false);
   useEffect(() => {
+    if (adopted.current) { adopted.current = false; return; }
     try { localStorage.setItem(storageKey, JSON.stringify(preferences)); } catch { /* Storage is optional. */ }
   }, [preferences, storageKey]);
+  useEffect(() => {
+    // Another window saved this layout: adopt it rather than overwrite it with this window's stale copy.
+    function adopt(event: StorageEvent) {
+      if (event.key !== storageKey || event.newValue === null) return;
+      try { const next = parsePreferences(JSON.parse(event.newValue)); adopted.current = true; setPreferences(next); } catch { /* Keep the current layout. */ }
+    }
+    window.addEventListener("storage", adopt);
+    return () => window.removeEventListener("storage", adopt);
+  }, [storageKey]);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 60_000); return () => clearInterval(timer); }, []);
   useEffect(() => {
     const element = scroll.current;
@@ -200,8 +211,9 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
   ].map(r => [r.id, r])).values()].sort((a, b) => a.label.localeCompare(b.label));
   const links = repositoryLinks(repositories, new Map(Object.entries(preferences.groupWith)));
   const placements = new Map<string, { folderId: string; repository: Repository | null }>();
+  const threadsById = new Map(threads.map(thread => [thread.id, thread]));
   for (const thread of threads) {
-    const target = preferences.threadFolders[thread.id];
+    const target = threadFolderTarget(thread, threadsById, preferences);
     if (!target) continue;
     if (preferences.customFolders[target]?.projectId === thread.projectId) {
       placements.set(thread.id, { folderId: target, repository: null });
@@ -216,8 +228,8 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
   const environments = new Map(state?.environments.map(e => [e.environmentId, e.repository]) ?? []);
   const assignments = new Map(state?.assignments.map(a => [a.threadId, a.repository]) ?? []);
   const groups = buildGroups(threads, environments, assignments, period, now, links, placements, props.activeThreadId);
-  const available = [...buildGroups(threads, environments, assignments, "all", now, links, undefined, props.activeThreadId),
-    ...buildGroups(threads, environments, assignments, "all", now, links, placements, props.activeThreadId)];
+  const allGroups = buildGroups(threads, environments, assignments, "all", now, links, placements, props.activeThreadId);
+  const available = [...buildGroups(threads, environments, assignments, "all", now, links, undefined, props.activeThreadId), ...allGroups];
   const groupCatalog = [...new Map(repositories.map(r => { const grouped = groupedRepository(r, links)!; return [grouped.id, grouped]; })).values()];
   const rows: ListRow[] = [];
   const pinned = allThreads.filter(thread => thread.isPinned && !thread.isHidden && !thread.isArchived)
@@ -231,7 +243,7 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
       for (const thread of pinned) {
         const node = nodes.get(thread.id);
         rows.push({ kind: "thread", key: `pinned:${thread.id}`, node: { thread, repository: node?.repository ?? null, children: [], contextOnly: false, updatedAt: thread.updatedAt },
-          depth: 1, groupRepositoryId: null, groupRepositoryLabel: null, folder: "pinned", scope: "pinned", peers: [], pinned: true });
+          depth: 1, groupRepositoryId: null, groupRepositoryLabel: null, folder: "pinned", scope: "pinned", pinned: true });
       }
     }
   }
@@ -271,7 +283,7 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
     for (const node of nodes) {
       const key = `smart:${view}:${node.thread.id}`;
       rows.push({ kind: "thread", key, node, depth, groupRepositoryId: null, groupRepositoryLabel: null, folder: `smart:${view}`,
-        scope: `smart:${view}`, peers: [], smart: true, summary: smart.summaries.get(node.thread.id) });
+        scope: `smart:${view}`, smart: true, summary: smart.summaries.get(node.thread.id) });
       if (!collapsed.has(key)) appendSmart(node.children, view, depth + 1);
     }
   }
@@ -285,14 +297,13 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
     rows.push({ kind: "heading", key, label: projects.find(p => p.id === projectId)?.name ?? projectId, depth: 0,
       count: groups.filter(g => g.projectId === projectId).reduce((n, g) => n + g.count, 0) });
     function appendThreads(nodes: ThreadNode[], folder: FolderNode, headingKey: string, parentId: string | null, depth: number, retainedOnly = false, openedOnly = false) {
-      const peers = nodes.map(node => node.thread.id);
       for (const node of nodes) {
         if (openedOnly && !openedThreads.get(folder.id)?.has(node.thread.id)) continue;
         if (retainedOnly && !retainedThreads.get(folder.id)?.has(node.thread.id)) continue;
         const key = `thread:${headingKey}:${node.thread.id}`;
         const ownFolder = placements.get(node.thread.id)?.folderId ?? JSON.stringify([node.thread.projectId, groupedRepository(node.repository, links)?.id ?? null]);
         rows.push({ kind: "thread", key, node, depth, groupRepositoryId: folder.repository?.id ?? null, groupRepositoryLabel: folder.repository?.label ?? null,
-          folder: folder.id, scope: siblingKey(folder.id, parentId), peers, compact: node.contextOnly && ownFolder !== folder.id });
+          folder: folder.id, scope: siblingKey(folder.id, parentId), parentId, compact: node.contextOnly && ownFolder !== folder.id });
         appendThreads(node.children, folder, headingKey, node.thread.id, depth + 1, retainedOnly, openedOnly || collapsed.has(key));
       }
     }
@@ -314,7 +325,7 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
     rows.push({ kind: "heading", key, label: project.name, depth: 0, count: plain.length });
     for (const thread of plain) {
       if (collapsed.has(key) && thread.id !== props.activeThreadId) continue;
-      rows.push({ kind: "thread", key: `plain:${thread.id}`, node: { thread, repository: null, children: [], contextOnly: false, updatedAt: thread.updatedAt }, depth: 1, groupRepositoryId: null, groupRepositoryLabel: null, folder: "", scope: "", peers: [] });
+      rows.push({ kind: "thread", key: `plain:${thread.id}`, node: { thread, repository: null, children: [], contextOnly: false, updatedAt: thread.updatedAt }, depth: 1, groupRepositoryId: null, groupRepositoryLabel: null, folder: "", scope: "" });
     }
   }
   let totalHeight = 0;
@@ -360,6 +371,15 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
       return { ...old, threadFolders, folderRepositories: folder && repository ? { ...old.folderRepositories, [folder]: repository } : old.folderRepositories };
     });
   }
+  // Every sibling in the folder's order, including those hidden by Updated, so only threads that appear later count as new.
+  function siblingIds(folder: string, parentId: string | null) {
+    let nodes = orderedTree(allGroups.find(group => folderKey(group) === folder)?.roots ?? [], folder, preferences);
+    if (parentId) {
+      const pending = [...nodes]; nodes = [];
+      for (const node of pending) { if (node.thread.id === parentId) { nodes = node.children; break; } pending.push(...node.children); }
+    }
+    return nodes.map(node => node.thread.id);
+  }
   function threadDrag(row: Extract<ListRow, { kind: "thread" }>): RowDrag {
     return {
       onDragStart: event => { event.stopPropagation(); const token = crypto.randomUUID(); dragged.current = { kind: "thread", row, token }; event.dataTransfer.setData(DRAG_TYPE, token); event.dataTransfer.effectAllowed = "move"; },
@@ -377,8 +397,9 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
         event.preventDefault(); event.stopPropagation();
         const source = dragged.current.row.node.thread.id;
         const rect = event.currentTarget.getBoundingClientRect(); const after = event.clientY > rect.top + rect.height / 2;
+        const peers = siblingIds(row.folder, row.parentId ?? null);
         setPreferences(old => ({ ...old, folderSort: { ...old.folderSort, [row.folder]: "manual" },
-          threadOrder: { ...old.threadOrder, [row.scope]: moveOrder(old.threadOrder[row.scope] ?? [], row.peers, source, row.node.thread.id, after) } }));
+          threadOrder: { ...old.threadOrder, [row.scope]: moveOrder(old.threadOrder[row.scope] ?? [], peers, source, row.node.thread.id, after) } }));
         finishDrag();
       },
     };
@@ -413,7 +434,9 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
         event.preventDefault(); event.stopPropagation();
         if (item.kind === "folder") {
           const where = position(event.clientY, event.currentTarget);
-          setPreferences(old => moveFolder(old, trees.get(node.projectId)!, item.node.id, node.id, where) ?? old);
+          // The unfiltered tree also saves folders hidden by Updated, so only folders that appear later count as new.
+          const tree = buildFolderTree(allGroups, available, preferences, node.projectId, links);
+          setPreferences(old => moveFolder(old, tree, item.node.id, node.id, where) ?? old);
         } else if (threadAllowed()) locateThread(item.row.node.thread.id, node.id, node.repository);
         finishDrag();
       },

@@ -22,3 +22,5 @@ An opened internal helper thread also appears while selected; other hidden helpe
 The sidebar's **Pinned** section shows visible, unarchived pinned threads from every Project in BB's pin order, independently of **Updated**. Pin and unpin through the normal BB thread actions. Pinned entries also retain their repository or virtual-folder location.
 
 Repository loading automatically retries temporary network failures up to three attempts and retains previously loaded folders. Use **Retry** after the final failure; backend logs include the failed SDK or host operation and its network cause when available.
+
+Reordering sibling threads switches their folder to **Manual** sorting; threads and folders that appear after a manual order was saved are shown above it, newest first. A thread without its own location follows the nearest ancestor that was moved to a folder, so agents started later stay with their parent.

@@ -622,3 +622,40 @@ it("positions mixed-height rows without gaps and reaches the final worker when s
     expect(Number.parseInt(positioned[i - 1].style.top) + Number.parseInt(positioned[i - 1].style.height)).toBe(Number.parseInt(positioned[i].style.top));
   }
 });
+const renderedThreads = (slot: Awaited<ReturnType<typeof mount>>) => [...slot.container.querySelectorAll("[data-wt-thread-id]")].map(e => e.getAttribute("data-wt-thread-id"));
+it("shows a thread created after a manual order above it and keeps it there when a sibling moves", async () => {
+  const folder = JSON.stringify(["workspace", repository.id]);
+  localStorage.setItem(`${STORAGE_KEY}:workspace`, JSON.stringify({ folderSort: { [folder]: "manual" }, threadOrder: { [JSON.stringify([folder, null])]: ["old", "parent"] } }));
+  const slot = await mount(undefined, [thread("parent"), thread("old"), thread("fresh")]);
+  expect(renderedThreads(slot)).toEqual(["fresh", "old", "parent"]);
+  drop(slot.getByLabelText("Drag to organize parent"), slot.getByText("old").closest(".wt-row")!, 0);
+  expect(renderedThreads(slot)).toEqual(["fresh", "parent", "old"]);
+});
+it("saves siblings hidden by Updated when reordering, so they do not count as new later", async () => {
+  const now = Date.now();
+  const slot = await mount(undefined, [thread("first", { updatedAt: now }), thread("second", { updatedAt: now - 1000 }), thread("stale", { updatedAt: now - 10 * DAY })]);
+  fireEvent.change(slot.getByLabelText("Activity period"), { target: { value: "1" } });
+  expect(renderedThreads(slot)).toEqual(["first", "second"]);
+  drop(slot.getByLabelText("Drag to organize second"), slot.getByText("first").closest(".wt-row")!, 0);
+  expect(Object.values(preferences().threadOrder)).toEqual([["second", "first", "stale"]]);
+  fireEvent.change(slot.getByLabelText("Activity period"), { target: { value: "all" } });
+  expect(renderedThreads(slot)).toEqual(["second", "first", "stale"]);
+});
+it("keeps a child created after its parent was moved in the parent's virtual folder", async () => {
+  localStorage.setItem(`${STORAGE_KEY}:workspace`, JSON.stringify({ customFolders: { "custom:active": { projectId: "workspace", label: "Active work" } }, threadFolders: { parent: "custom:active" } }));
+  const slot = await mount();
+  expect(slot.getByText("Active work").closest("button")!.querySelector(".wt-count")!.textContent).toBe("2");
+  expect(slot.getByText("sample-app").closest("button")!.querySelector(".wt-count")!.textContent).toBe("1");
+  expect(renderedThreads(slot)).toEqual(["parent", "child", "old"]);
+  expect(preferences().threadFolders).toEqual({ parent: "custom:active" });
+});
+it("adopts a layout saved by another window instead of overwriting it", async () => {
+  const slot = await mount(); const key = `${STORAGE_KEY}:workspace`;
+  const saved = JSON.stringify({ customFolders: { "custom:other": { projectId: "workspace", label: "From another window" } } });
+  localStorage.setItem(key, saved);
+  await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key, newValue: saved })); });
+  expect(slot.getByText("From another window")).toBeTruthy();
+  expect(localStorage.getItem(key)).toBe(saved);
+  fireEvent.change(slot.getByLabelText("Activity period"), { target: { value: "7" } });
+  expect(preferences()).toEqual(expect.objectContaining({ period: "7", customFolders: { "custom:other": { projectId: "workspace", label: "From another window" } } }));
+});

@@ -1,7 +1,7 @@
 Thread House groups the enabled BB Project's sidebar by Git repository, preserving parent and child threads. Select Enabled Project in the plugin settings. Other Projects use a plain thread list, without repository probes or assignments. The sidebar renderer itself is global in BB.
 
 Create virtual folders with New folder, nest folders by dropping onto their center, and reorder them by dropping at the top or bottom edge. Every folder has a menu and a right-click menu for Pin folder, Sort by, and folder management. No folders are pinned automatically.
-Drag threads by the Drag to organize handle to reorder siblings or organize a task and its children in a folder. Text keeps BB split drag. Checkout paths and repository metadata stay intact. Automatic folder and Restore thread locations undo manual thread placement, including after clone merging.
+Drag threads by the Drag to organize handle to reorder siblings or organize a task and its children in a folder. Agents started later follow their parent's folder. Threads and folders that appear after a manual order are shown above it, newest first. Text keeps BB split drag. Checkout paths and repository metadata stay intact. Automatic folder and Restore thread locations undo manual thread placement, including after clone merging.
 Clones with the same network origin on one machine group automatically under the repository name, including release checkouts. SSH and HTTPS origin addresses are normalized without credentials. Repositories without a network origin remain separate by Git directory.
 Use Group with… to override grouping; Keep checkouts separate restores the current clones as individual groups and persists the exception. Folder nesting and clone merging are separate operations.
 

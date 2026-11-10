@@ -40,16 +40,32 @@ export function effectiveFolderId(id: string, preferences: Preferences, links: R
 
 export function parsePreferences(value: unknown): Preferences {
   const parsed = schema.safeParse(value ?? {});
-  return parsed.success ? parsed.data : schema.parse({});
+  if (parsed.success) return parsed.data;
+  // One unreadable field must not discard the rest of the saved layout.
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return schema.parse(Object.fromEntries(Object.entries(schema.shape).flatMap(([key, field]) => {
+    const result = field.safeParse(source[key]);
+    return result.success ? [[key, result.data]] : [];
+  })));
 }
 export function readPreferences(storageKey = STORAGE_KEY): Preferences {
   try { return parsePreferences(JSON.parse(localStorage.getItem(storageKey) ?? "null")); }
   catch { return parsePreferences(null); }
 }
 
-function rank(order: readonly string[], id: string) {
-  const index = order.indexOf(id);
-  return index < 0 ? Infinity : index;
+// Entries missing from a saved order appeared after it, so they stay ahead of it like in the newest-first views.
+export function rank(order: readonly string[], id: string) {
+  return order.indexOf(id);
+}
+// A thread without its own location follows the nearest ancestor that has one.
+export function threadFolderTarget(thread: ThreadNode["thread"], threads: ReadonlyMap<string, ThreadNode["thread"]>, preferences: Preferences): string | undefined {
+  const visited = new Set<string>();
+  for (let current: ThreadNode["thread"] | undefined = thread; current && !visited.has(current.id);
+    current = current.parentThreadId ? threads.get(current.parentThreadId) : undefined) {
+    visited.add(current.id);
+    const target = preferences.threadFolders[current.id];
+    if (target) return target;
+  }
 }
 export function comparePins(a: ThreadNode["thread"], b: ThreadNode["thread"]) {
   return Number(b.isPinned) - Number(a.isPinned)
@@ -69,10 +85,10 @@ export function orderedTree(nodes: readonly ThreadNode[], folder: string, prefer
   });
 }
 
-// Keep entries hidden by the activity filter when moving a visible sibling.
+// Keep entries hidden by the activity filter when moving a visible sibling. Unsaved siblings are shown ahead of the saved order and are saved there.
 export function moveOrder(stored: readonly string[], visible: readonly string[], id: string, target: string, after = false): string[] {
   if (id === target || !visible.includes(id) || !visible.includes(target)) return [...stored];
-  const order = [...new Set([...stored, ...visible])].filter(value => value !== id);
+  const order = [...visible.filter(value => !stored.includes(value)), ...stored].filter(value => value !== id);
   order.splice(order.indexOf(target) + Number(after), 0, id);
   return order;
 }

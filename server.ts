@@ -56,7 +56,14 @@ export default async function plugin(bb: BbPluginApi) {
   }
   async function state(threadIds: string[], environmentIds: string[], signal?: AbortSignal) {
     if (!enabledProject) return { environments: [], assignments: [] };
-    const selectedThreads = (await Promise.all([...new Set(threadIds)].map(threadId => read("threads.get", () => bb.sdk.threads.get({ threadId, signal }))))).filter(thread => thread.projectId === enabledProject);
+    const selectedThreads = (await Promise.all([...new Set(threadIds)].map(async threadId => {
+      try { return [await read("threads.get", () => bb.sdk.threads.get({ threadId, signal }))]; }
+      catch (cause) {
+        // One unreadable thread, such as one deleted a moment ago, must not empty the whole sidebar.
+        if (signal?.aborted || isTransientFailure(cause instanceof Error ? cause.message : String(cause))) throw cause;
+        return [];
+      }
+    }))).flat().filter(thread => thread.projectId === enabledProject);
     const allowed = selectedThreads.map(thread => thread.id);
     const [environments, metadata] = await Promise.all([
       Promise.all([...new Set(environmentIds)].map(id => resolveEnvironment(id, signal))),

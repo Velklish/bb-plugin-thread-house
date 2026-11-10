@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createFakePluginHost, experimental_scanPublicSdkOnly, makeThreadResponse } from "@get-bb/plugin-sdk/testing";
 import plugin from "./server";
 import { repository } from "./test-fixtures";
+import type { RepositoryState } from "./contracts";
 
 const disposals: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposals.splice(0)) await dispose(); });
@@ -64,6 +65,17 @@ describe("repository assignments", () => {
       return { projectId: "selected", hostId: "host", path: "/work/sample-app" };
     });
     await expect(harness.behavior.callRpc("state", { threadIds: ["t"], environmentIds: ["env"] })).rejects.toThrow("fetch failed");
+  });
+  it("keeps loading the sidebar when one thread can no longer be read", async () => {
+    const { harness, metadata } = await setup();
+    metadata.set("t", { repository });
+    harness.sdk.stub("threads.get", async ({ threadId }) => {
+      if (threadId === "gone") throw new Error("Thread not found");
+      return makeThreadResponse({ id: threadId, projectId: "selected", environmentId: "env" });
+    });
+    const result = await harness.behavior.callRpc("state", { threadIds: ["gone", "t"], environmentIds: ["env"] }) as RepositoryState;
+    expect(result.assignments.map(row => row.threadId)).toEqual(["t"]);
+    expect(result.environments).toHaveLength(1);
   });
   it("does not probe environments or change assignments outside the selected project", async () => {
     const { harness, calls, metadata } = await setup();

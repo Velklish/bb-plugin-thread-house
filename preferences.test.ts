@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildGroups } from "./model";
-import { folderKey, moveOrder, orderedTree, parsePreferences, siblingKey } from "./preferences";
+import { folderKey, moveOrder, orderedTree, parsePreferences, siblingKey, threadFolderTarget } from "./preferences";
 import { buildFolderTree } from "./folders";
 import { NOW, repository, thread } from "./test-fixtures";
 
@@ -60,5 +60,24 @@ describe("sidebar layout preferences", () => {
     expect(moveOrder(["a", "hidden", "b", "c"], ["a", "b", "c"], "c", "a")).toEqual(["c", "a", "hidden", "b"]);
     expect(moveOrder([], ["a", "b", "c"], "a", "c", true)).toEqual(["b", "c", "a"]);
     expect(moveOrder(["a", "b"], ["a", "b"], "foreign-child", "a")).toEqual(["a", "b"]);
+    expect(moveOrder(["a", "b"], ["new", "a", "b"], "b", "a")).toEqual(["new", "b", "a"]);
+  });
+  it("shows threads that appeared after a manual order ahead of it, newest first", () => {
+    const group = buildGroups([thread("a", { updatedAt: 1 }), thread("b", { updatedAt: 2 }), thread("new", { updatedAt: 3 }), thread("newer", { updatedAt: 4 })], new Map([["env", repository]]), new Map(), "all", NOW)[0];
+    const key = folderKey(group); const prefs = parsePreferences(null);
+    prefs.folderSort[key] = "manual"; prefs.threadOrder[siblingKey(key, null)] = ["a", "b"];
+    expect(orderedTree(group.roots, key, prefs).map(n => n.thread.id)).toEqual(["newer", "new", "a", "b"]);
+  });
+  it("keeps the readable layout when one saved field is invalid", () => {
+    const prefs = parsePreferences({ period: "3", folderSort: { example: "random" }, customFolders: { a: { projectId: "workspace", label: "A" } }, threadFolders: { t: "a" } });
+    expect(prefs.folderSort).toEqual({}); expect(prefs.period).toBe("3");
+    expect(prefs.customFolders).toEqual({ a: { projectId: "workspace", label: "A" } }); expect(prefs.threadFolders).toEqual({ t: "a" });
+    expect(parsePreferences("corrupt")).toEqual(parsePreferences(null));
+  });
+  it("lets a thread without its own location follow the nearest placed ancestor", () => {
+    const threads = new Map([thread("root"), thread("child", { parentThreadId: "root" }), thread("grandchild", { parentThreadId: "child" }), thread("moved", { parentThreadId: "root" })].map(t => [t.id, t]));
+    const prefs = parsePreferences({ threadFolders: { root: "a", moved: "b" } });
+    expect([...threads.values()].map(t => threadFolderTarget(t, threads, prefs))).toEqual(["a", "a", "a", "b"]);
+    expect(threadFolderTarget(thread("loose"), threads, prefs)).toBeUndefined();
   });
 });
