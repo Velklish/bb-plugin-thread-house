@@ -51,6 +51,11 @@ function rank(order: readonly string[], id: string) {
   const index = order.indexOf(id);
   return index < 0 ? Infinity : index;
 }
+export function comparePins(a: ThreadNode["thread"], b: ThreadNode["thread"]) {
+  return Number(b.isPinned) - Number(a.isPinned)
+    || (a.isPinned && b.isPinned ? Number(b.pinSortKey !== null) - Number(a.pinSortKey !== null)
+      || (a.pinSortKey && b.pinSortKey ? (a.pinSortKey < b.pinSortKey ? -1 : Number(a.pinSortKey > b.pinSortKey)) : (b.pinnedAt ?? 0) - (a.pinnedAt ?? 0)) : 0);
+}
 export function orderedTree(nodes: readonly ThreadNode[], folder: string, preferences: Preferences, parentId: string | null = null): ThreadNode[] {
   const mode = preferences.folderSort[folder] ?? "updated";
   const order = preferences.threadOrder[siblingKey(folder, parentId)] ?? [];
@@ -59,11 +64,7 @@ export function orderedTree(nodes: readonly ThreadNode[], folder: string, prefer
     if (mode === "manual") result = rank(order, a.thread.id) - rank(order, b.thread.id);
     if (mode === "created") result = b.thread.createdAt - a.thread.createdAt;
     if (mode === "title") result = a.thread.displayTitle.localeCompare(b.thread.displayTitle);
-    if (mode === "pinned") {
-      result = Number(b.thread.isPinned) - Number(a.thread.isPinned);
-      if (!result && a.thread.isPinned && b.thread.isPinned) result = Number(b.thread.pinSortKey !== null) - Number(a.thread.pinSortKey !== null)
-        || (a.thread.pinSortKey && b.thread.pinSortKey ? a.thread.pinSortKey.localeCompare(b.thread.pinSortKey) : (b.thread.pinnedAt ?? 0) - (a.thread.pinnedAt ?? 0));
-    }
+    if (mode === "pinned") result = comparePins(a.thread, b.thread);
     return result || b.updatedAt - a.updatedAt || a.thread.id.localeCompare(b.thread.id);
   });
 }

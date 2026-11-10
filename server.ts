@@ -2,6 +2,7 @@ import { basename } from "node:path";
 import { cliCommand, defineCli, PluginCliError, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { hostContract, repositorySchema, rpcContract } from "./contracts";
 import type { Repository } from "./model";
+import { isTransientFailure } from "./network";
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({ project: { type: "project", label: "Enabled Project", description: "Enable repository folders and agent trees for this Project. Other Projects use a plain thread list." } });
@@ -10,12 +11,31 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.configure(context => ({ tools: [], skills: context.project.id === enabledProject ? ["thread-house"] : [] }));
   const host = bb.hosts.experimental_client({ contract: hostContract });
   const cache = new Map<string, { repository: Repository | null; at: number }>();
+  let activeReads = 0;
+  const waitingReads: (() => void)[] = [];
+  async function read<T>(operation: string, run: () => Promise<T>): Promise<T> {
+    if (activeReads >= 8) await new Promise<void>(resolve => waitingReads.push(resolve));
+    else activeReads++;
+    try { return await run(); }
+    catch (cause) {
+      let detail = cause instanceof Error ? cause.message : String(cause);
+      if (cause instanceof Error && cause.cause instanceof Error) {
+        const network = cause.cause as Error & { code?: string };
+        detail += ` (${network.code ?? network.name}: ${network.message})`;
+      }
+      bb.log.warn(`${operation} failed: ${detail}`);
+      throw cause;
+    } finally {
+      const next = waitingReads.shift();
+      if (next) next(); else activeReads--;
+    }
+  }
 
   async function resolvePath(hostId: string, path: string, signal?: AbortSignal) {
     const key = JSON.stringify([hostId, path]);
     const cached = cache.get(key);
     if (cached && Date.now() - cached.at < 300_000) return { repository: cached.repository, error: null };
-    const [probe] = await host.call("probe", { paths: [path] }, { hostId, signal });
+    const [probe] = await read("host.probe", () => host.call("probe", { paths: [path] }, { hostId, signal }));
     const repository = probe.root && probe.commonDir ? {
       id: `${hostId}:${probe.commonDir}`, hostId, path: probe.root, label: basename(probe.root),
       ...(probe.origin ? { origin: probe.origin } : {}),
@@ -25,7 +45,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   async function resolveEnvironment(environmentId: string, signal?: AbortSignal) {
     try {
-      const env = await bb.sdk.environments.get({ environmentId, signal });
+      const env = await read("environments.get", () => bb.sdk.environments.get({ environmentId, signal }));
       if (!enabledProject || env.projectId !== enabledProject) return null;
       if (!env.path) return { environmentId, repository: null, error: null };
       return { environmentId, ...await resolvePath(env.hostId, env.path, signal) };
@@ -36,11 +56,11 @@ export default async function plugin(bb: BbPluginApi) {
   }
   async function state(threadIds: string[], environmentIds: string[], signal?: AbortSignal) {
     if (!enabledProject) return { environments: [], assignments: [] };
-    const selectedThreads = (await Promise.all([...new Set(threadIds)].map(threadId => bb.sdk.threads.get({ threadId, signal })))).filter(thread => thread.projectId === enabledProject);
+    const selectedThreads = (await Promise.all([...new Set(threadIds)].map(threadId => read("threads.get", () => bb.sdk.threads.get({ threadId, signal }))))).filter(thread => thread.projectId === enabledProject);
     const allowed = selectedThreads.map(thread => thread.id);
     const [environments, metadata] = await Promise.all([
       Promise.all([...new Set(environmentIds)].map(id => resolveEnvironment(id, signal))),
-      allowed.length ? bb.sdk.threads.experimental_listPluginMetadata({ threadIds: allowed, signal }) : { threads: [] },
+      allowed.length ? read("threads.experimental_listPluginMetadata", () => bb.sdk.threads.experimental_listPluginMetadata({ threadIds: allowed, signal })) : { threads: [] },
     ]);
     const saved = metadata.threads.flatMap(row => {
       const parsed = repositorySchema.safeParse(row.metadata.repository);
@@ -50,12 +70,13 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         const thread = selectedThreads.find(thread => thread.id === row.threadId);
         if (!thread?.environmentId) return null;
-        const env = await bb.sdk.environments.get({ environmentId: thread.environmentId, signal });
+        const env = await read("environments.get", () => bb.sdk.environments.get({ environmentId: thread.environmentId!, signal }));
         if (env.projectId !== enabledProject || env.hostId !== row.repository.hostId) return null;
         const resolved = await resolvePath(env.hostId, row.repository.path, signal);
+        if (resolved.error && isTransientFailure(resolved.error)) throw new Error(resolved.error);
         return { ...row, repository: resolved.repository ?? row.repository };
       } catch (cause) {
-        if (signal?.aborted) throw cause;
+        if (signal?.aborted || isTransientFailure(cause instanceof Error ? cause.message : String(cause))) throw cause;
         return null;
       }
     }));

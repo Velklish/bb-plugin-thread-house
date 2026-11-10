@@ -34,6 +34,37 @@ async function setup(origin?: string) {
   return { ...host, metadata, calls };
 }
 describe("repository assignments", () => {
+  it("bounds SDK reads across concurrent sidebar requests", async () => {
+    const { harness } = await setup();
+    let active = 0, peak = 0;
+    harness.sdk.stub("threads.get", async ({ threadId }) => {
+      peak = Math.max(peak, ++active);
+      await new Promise(resolve => setTimeout(resolve, 1));
+      active--;
+      return makeThreadResponse({ id: threadId, projectId: "selected", environmentId: "env" });
+    });
+    const input = { threadIds: Array.from({ length: 30 }, (_, i) => `t${i}`), environmentIds: [] };
+    await Promise.all([harness.behavior.callRpc("state", input), harness.behavior.callRpc("state", input)]);
+    expect(peak).toBeLessThanOrEqual(8);
+    expect(harness.inspection.sdk.callsTo("threads.get")).toHaveLength(60);
+  });
+  it("logs the failing SDK operation and network cause before propagating the error", async () => {
+    const { harness } = await setup();
+    harness.sdk.stub("threads.get", async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" }) }); });
+    await expect(harness.behavior.callRpc("state", { threadIds: ["t"], environmentIds: [] })).rejects.toThrow("fetch failed");
+    expect(JSON.stringify(harness.logEntries)).toContain("threads.get");
+    expect(JSON.stringify(harness.logEntries)).toContain("UND_ERR_SOCKET");
+  });
+  it("propagates assignment network failures so the sidebar can retain and retry the assignment", async () => {
+    const { harness, metadata } = await setup();
+    metadata.set("t", { repository });
+    let reads = 0;
+    harness.sdk.stub("environments.get", async () => {
+      if (++reads === 2) throw new TypeError("fetch failed");
+      return { projectId: "selected", hostId: "host", path: "/work/sample-app" };
+    });
+    await expect(harness.behavior.callRpc("state", { threadIds: ["t"], environmentIds: ["env"] })).rejects.toThrow("fetch failed");
+  });
   it("does not probe environments or change assignments outside the selected project", async () => {
     const { harness, calls, metadata } = await setup();
     expect(await harness.behavior.callRpc("state", { threadIds: ["outside"], environmentIds: ["outside-env"] })).toEqual({ environments: [], assignments: [] });

@@ -43,6 +43,12 @@ describe("sidebar layout preferences", () => {
     const key = folderKey(group); const prefs = parsePreferences(null); prefs.folderSort[key] = "pinned";
     expect(orderedTree(group.roots, key, prefs).map(n => n.thread.id)).toEqual(["keyed", "new-pin", "old-pin"]);
   });
+  it("uses lexicographic pin keys independently of locale collation", () => {
+    const group = buildGroups([thread("lower", { isPinned: true, pinSortKey: "aa" }),
+      thread("upper", { isPinned: true, pinSortKey: "aZ" })], new Map([["env", repository]]), new Map(), "all", NOW)[0];
+    const key = folderKey(group); const prefs = parsePreferences(null); prefs.folderSort[key] = "pinned";
+    expect(orderedTree(group.roots, key, prefs).map(n => n.thread.id)).toEqual(["upper", "lower"]);
+  });
   it("keeps pinned folders first and honors the saved order of unpinned folders", () => {
     const folders = ["a", "b", "c"].map((id, i) => ({ ...groups()[0], repository: { ...repository, id }, updatedAt: NOW + i }));
     const prefs = parsePreferences(null);

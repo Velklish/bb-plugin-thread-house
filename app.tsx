@@ -14,12 +14,14 @@ import { Input } from "./components/ui/input";
 import type { rpcContract, RepositoryState } from "./contracts";
 import { buildGroups, groupedRepository, repositoryLinks, type Period, type Repository, type ThreadNode } from "./model";
 import { FolderRow, type RowDrag } from "./folder-row";
-import { STORAGE_KEY, effectiveFolderId, folderScope, moveOrder, orderedTree, readPreferences, siblingKey } from "./preferences";
+import { STORAGE_KEY, comparePins, effectiveFolderId, folderScope, moveOrder, orderedTree, readPreferences, siblingKey } from "./preferences";
 import { buildFolderTree, moveFolder, removeFolder, type FolderNode, type DropPosition } from "./folders";
 import { buildSmartViews, type ActivitySummary } from "./smart-views";
+import { isTransientFailure } from "./network";
 import "./styles.css";
 
 const ROW_HEIGHT = 40;
+const COMPACT_ROW_HEIGHT = 28;
 const DRAG_TYPE = "application/x-thread-house";
 const periods: { value: Period; label: string }[] = [
   { value: "1", label: "Last 24 hours" }, { value: "3", label: "Last 3 days" },
@@ -40,26 +42,45 @@ function useRepositoryData(threadIds: string[], environmentIds: string[], enviro
     if (!ids.length && !envs.length) { setState({ environments: [], assignments: [] }); setError(null); return; }
     if (connection !== "connected") return;
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const count = Math.max(1, Math.ceil(Math.max(ids.length, envs.length) / 200));
-    Promise.all(Array.from({ length: count }, (_, i) => rpc.call("state", {
-      threadIds: ids.slice(i * 200, (i + 1) * 200),
-      environmentIds: envs.slice(i * 200, (i + 1) * 200), refresh: reload.force,
-    }))).then(parts => {
-      if (cancelled) return;
-      setState({ environments: parts.flatMap(p => p.environments), assignments: parts.flatMap(p => p.assignments) });
-      setError(null);
-    }, cause => { if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause)); });
-    return () => { cancelled = true; };
+    async function load(attempt = 0): Promise<void> {
+      try {
+        const parts: RepositoryState[] = [];
+        for (let i = 0; i < count; i++) {
+          if (cancelled) return;
+          parts.push(await rpc.call("state", {
+            threadIds: ids.slice(i * 200, (i + 1) * 200),
+            environmentIds: envs.slice(i * 200, (i + 1) * 200), refresh: reload.force && attempt === 0 && i === 0,
+          }));
+        }
+        if (cancelled) return;
+        const environments = parts.flatMap(p => p.environments);
+        setState(previous => ({
+          environments: environments.map(row => row.error ? { ...row, repository: previous?.environments.find(old => old.environmentId === row.environmentId)?.repository ?? row.repository } : row),
+          assignments: parts.flatMap(p => p.assignments),
+        }));
+        setError(null);
+        if (environments.some(row => row.error && isTransientFailure(row.error)) && attempt < 2) timer = setTimeout(() => void load(attempt + 1), attempt ? 750 : 250);
+      } catch (cause) {
+        if (cancelled) return;
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setError(message);
+        if (isTransientFailure(message) && attempt < 2) timer = setTimeout(() => void load(attempt + 1), attempt ? 750 : 250);
+      }
+    }
+    void load();
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [rpc, idsKey, environmentPaths, reload, connection]);
   return { rpc, state, error, refresh };
 }
 type ListRow =
   | { kind: "heading"; key: string; label: string; subtitle?: string; depth: number; count: number; smart?: "input" | "recent" }
   | { kind: "folder"; key: string; node: FolderNode; depth: number }
-  | { kind: "thread"; key: string; node: ThreadNode; depth: number; groupRepositoryId: string | null; groupRepositoryLabel: string | null; folder: string; scope: string; peers: string[]; smart?: boolean; summary?: ActivitySummary };
+  | { kind: "thread"; key: string; node: ThreadNode; depth: number; groupRepositoryId: string | null; groupRepositoryLabel: string | null; folder: string; scope: string; peers: string[]; compact?: boolean; smart?: boolean; pinned?: boolean; summary?: ActivitySummary };
 
-function ThreadRow({ node, depth, groupRepositoryId, groupRepositoryLabel, shortcutTarget, drag, restore, summary, expanded, toggle, active, onNavigate, repositories, onAssign, onPath, enhanced = true }: {
-  node: ThreadNode; depth: number; groupRepositoryId: string | null; expanded: boolean;
+function ThreadRow({ node, depth, groupRepositoryId, groupRepositoryLabel, shortcutTarget, drag, restore, summary, expanded, branchCollapsed, toggle, active, onNavigate, repositories, onAssign, onPath, compact = false, enhanced = true }: {
+  node: ThreadNode; depth: number; groupRepositoryId: string | null; expanded: boolean; branchCollapsed: boolean;
   shortcutTarget: boolean;
   groupRepositoryLabel: string | null;
   drag: RowDrag; restore?: () => void;
@@ -67,6 +88,7 @@ function ThreadRow({ node, depth, groupRepositoryId, groupRepositoryLabel, short
   toggle(): void; active: boolean; onNavigate(): void; repositories: Repository[];
   onAssign(threadId: string, path: string | null): Promise<void>; onPath(node: ThreadNode): void;
   enhanced?: boolean;
+  compact?: boolean;
 }) {
   const t = node.thread;
   const navigate = useBbNavigate();
@@ -95,15 +117,15 @@ function ThreadRow({ node, depth, groupRepositoryId, groupRepositoryLabel, short
   if (restore) inline.push({ key: "thread-house/automatic-folder", group: "thread-house", action: { label: "Automatic folder", icon: "Folder", run: restore } });
   const provider = providers.find(p => p.id === t.providerId);
   const location = [summary?.needsInput ? `${summary.needsInput} need input` : null, summary?.running ? `${summary.running} running` : null,
-    enhanced && ((node.repository?.id ?? null) !== groupRepositoryId || (node.repository?.label ?? null) !== groupRepositoryLabel) ? node.repository?.label ?? "Unassigned" : null, t.environment?.branchName, t.host?.name].filter(Boolean).join(" · ");
+    enhanced && ((node.repository?.id ?? null) !== groupRepositoryId || (node.repository?.label ?? null) !== groupRepositoryLabel) ? node.repository?.label ?? "Unassigned" : null, t.environment?.branchName].filter(Boolean).join(" · ");
   const indicator = hasUnsubmittedDraft && (t.indicator === "none" || t.indicator === "runtime")
     ? (t.indicator === "runtime" ? "working-draft" : "draft") : t.indicator;
   return <ContextMenu thread={target} inline={inline}>
-    <div className={`wt-row ${active ? "wt-selected" : ""} ${node.contextOnly ? "wt-context" : ""}`}
+    <div className={`wt-row ${active ? "wt-selected" : ""} ${node.contextOnly ? "wt-context" : ""} ${compact ? "wt-compact" : ""}`}
       role="treeitem" aria-level={depth + 1} aria-expanded={node.children.length ? expanded : undefined}
       data-wt-thread-id={t.id} onDragOver={drag.onDragOver} onDragLeave={drag.onDragLeave} onDrop={drag.onDrop}
       style={{ paddingLeft: 8 + depth * 12 }}>
-      {node.children.length ? <button className="wt-icon-button" aria-label={`${expanded ? "Collapse" : "Expand"} ${t.displayTitle}`} onClick={toggle}>
+      {node.children.length ? <button className="wt-icon-button" aria-label={`${branchCollapsed ? "Expand" : "Collapse"} ${t.displayTitle}`} onClick={toggle}>
         <Icon name={expanded ? "ChevronDown" : "ChevronRight"} className="size-3.5" />
       </button> : <span className="wt-indent" />}
       <a {...splitProps} href={t.href} className="wt-thread-link"
@@ -111,15 +133,16 @@ function ThreadRow({ node, depth, groupRepositoryId, groupRepositoryLabel, short
         aria-current={active ? "page" : undefined} aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
         title={`${t.displayTitle}\n${t.environment?.path ?? "No environment"}${node.contextOnly ? "\nParent retained for a child in this view" : ""}`}
         onClick={event => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate.toThread(t.id); onNavigate(); } }}>
-        {provider ? <ProviderIcon providerKind="agent" provider={provider} className="size-4 shrink-0" /> : null}
+        {!compact && provider ? <ProviderIcon providerKind="agent" provider={provider} className="size-4 shrink-0" /> : null}
+        {t.environment?.isWorktree === true ? <span className="wt-worktree" role="img" aria-label="Git worktree" title="Git worktree"><Icon name="Fork" className="size-3 shrink-0" aria-hidden /></span> : null}
         <span className="wt-thread-text"><span className="wt-title"><ThreadTitle threadId={t.id} /></span>
-          <span className="wt-location">{location || "No environment"}{node.contextOnly ? " · Parent" : ""}</span></span>
-        {t.isPinned ? <Icon name="Pin" className="size-3 shrink-0" /> : null}
-        {t.isUnread ? <span className="wt-unread" aria-label="Unread" /> : null}
-        <StatusGlyph indicator={indicator} rowStatus={rowStatus} />
+          {!compact && location ? <span className="wt-location">{location}{node.contextOnly ? " · Parent" : ""}</span> : null}</span>
+        {compact ? <Icon name="ArrowUpRight" className="size-3 shrink-0" aria-hidden /> : null}
+        {!compact && t.isPinned ? <Icon name="Pin" className="size-3 shrink-0" /> : null}
+        {!compact ? <StatusGlyph indicator={indicator} rowStatus={rowStatus} /> : null}
         {shortcut ? <kbd>{shortcut.label}</kbd> : null}
       </a>
-      {enhanced ? <button className="wt-icon-button wt-menu wt-order-handle" aria-label={`Drag to organize ${t.displayTitle}`} title="Drag to organize" draggable
+      {enhanced && drag.onDragStart ? <button className="wt-icon-button wt-menu wt-order-handle" aria-label={`Drag to organize ${t.displayTitle}`} title="Drag to organize" draggable
         onPointerDown={event => event.stopPropagation()} onDragStart={drag.onDragStart} onDragEnd={drag.onDragEnd}><span aria-hidden="true">⠿</span></button> : null}
       <ThreadMenu thread={target} inline={inline} trigger={props => <button {...props} className={[props.className, "wt-icon-button wt-menu"].filter(Boolean).join(" ")} aria-label={`Actions for ${t.displayTitle}`}><Icon name="MoreHorizontal" className="size-4" /></button>} />
     </div>
@@ -149,8 +172,9 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
   const scroll = useRef<HTMLDivElement>(null);
   const dragged = useRef<(({ kind: "folder"; node: FolderNode } | { kind: "thread"; row: Extract<ListRow, { kind: "thread" }> }) & { token: string }) | null>(null);
   const [viewport, setViewport] = useState({ top: 0, height: 600 });
-  const ids = [...new Set(threads.filter(t => !t.isHidden).map(t => t.id))].sort();
-  const envs = [...new Set(threads.filter(t => !t.isHidden).flatMap(t => t.environment?.id ? [t.environment.id] : []))].sort();
+  const visibleThreads = threads.filter(t => !t.isHidden || t.id === props.activeThreadId);
+  const ids = [...new Set(visibleThreads.map(t => t.id))].sort();
+  const envs = [...new Set(visibleThreads.flatMap(t => t.environment?.id ? [t.environment.id] : []))].sort();
   const paths = JSON.stringify([...new Map(threads.flatMap(t => t.environment?.id ? [[t.environment.id, t.environment.path] as const] : [])).entries()].sort(([a], [b]) => a.localeCompare(b)));
   const { rpc, state, error, refresh } = useRepositoryData(ids, envs, paths);
   useEffect(() => {
@@ -191,13 +215,57 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
   }
   const environments = new Map(state?.environments.map(e => [e.environmentId, e.repository]) ?? []);
   const assignments = new Map(state?.assignments.map(a => [a.threadId, a.repository]) ?? []);
-  const groups = buildGroups(threads, environments, assignments, period, now, links, placements);
-  const available = [...buildGroups(threads, environments, assignments, "all", now, links),
-    ...buildGroups(threads, environments, assignments, "all", now, links, placements)];
+  const groups = buildGroups(threads, environments, assignments, period, now, links, placements, props.activeThreadId);
+  const available = [...buildGroups(threads, environments, assignments, "all", now, links, undefined, props.activeThreadId),
+    ...buildGroups(threads, environments, assignments, "all", now, links, placements, props.activeThreadId)];
   const groupCatalog = [...new Map(repositories.map(r => { const grouped = groupedRepository(r, links)!; return [grouped.id, grouped]; })).values()];
   const rows: ListRow[] = [];
+  const pinned = allThreads.filter(thread => thread.isPinned && !thread.isHidden && !thread.isArchived)
+    .sort((a, b) => comparePins(a, b) || a.id.localeCompare(b.id));
+  if (pinned.length) {
+    rows.push({ kind: "heading", key: "pinned", label: "Pinned", depth: 0, count: pinned.length });
+    if (!collapsed.has("pinned")) {
+      const nodes = new Map<string, ThreadNode>();
+      function collect(node: ThreadNode) { nodes.set(node.thread.id, node); node.children.forEach(collect); }
+      available.forEach(group => group.roots.forEach(collect));
+      for (const thread of pinned) {
+        const node = nodes.get(thread.id);
+        rows.push({ kind: "thread", key: `pinned:${thread.id}`, node: { thread, repository: node?.repository ?? null, children: [], contextOnly: false, updatedAt: thread.updatedAt },
+          depth: 1, groupRepositoryId: null, groupRepositoryLabel: null, folder: "pinned", scope: "pinned", peers: [], pinned: true });
+      }
+    }
+  }
   const projectIds = [...new Set([...groups.map(g => g.projectId), ...Object.values(preferences.customFolders).filter(f => f.projectId === enabledProject).map(f => f.projectId)])];
   const trees = new Map(projectIds.map(id => [id, buildFolderTree(groups, available, preferences, id, links)]));
+  const retainedThreads = new Map<string, Set<string>>();
+  const retainedFolders = new Set<string>();
+  const openedThreads = new Map<string, Set<string>>();
+  const openedFolders = new Set<string>();
+  function retainThread(node: ThreadNode, included: Set<string>, opened: Set<string>): boolean {
+    const t = node.thread;
+    let keepOpened = !node.contextOnly && t.id === props.activeThreadId;
+    let retain = !node.contextOnly && (["starting", "active", "stopping"].includes(t.status) || t.isUnread || t.indicator !== "none" || keepOpened);
+    for (const child of node.children) {
+      if (retainThread(child, included, opened)) retain = true;
+      if (opened.has(child.thread.id)) keepOpened = true;
+    }
+    if (retain) included.add(t.id);
+    if (keepOpened) opened.add(t.id);
+    return retain;
+  }
+  function retainFolder(node: FolderNode): boolean {
+    let retain = false;
+    for (const child of node.children) if (retainFolder(child)) retain = true;
+    const included = new Set<string>();
+    const opened = new Set<string>();
+    for (const root of node.group?.roots ?? []) if (retainThread(root, included, opened)) retain = true;
+    retainedThreads.set(node.id, included);
+    openedThreads.set(node.id, opened);
+    if (retain) retainedFolders.add(node.id);
+    if (opened.size || node.children.some(child => openedFolders.has(child.id))) openedFolders.add(node.id);
+    return retain;
+  }
+  for (const tree of trees.values()) for (const node of tree) retainFolder(node);
   const smart = buildSmartViews(threads, environments, assignments, period, now);
   function appendSmart(nodes: ThreadNode[], view: "input" | "recent", depth: number) {
     for (const node of nodes) {
@@ -216,40 +284,54 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
     const key = `project:${projectId}`;
     rows.push({ kind: "heading", key, label: projects.find(p => p.id === projectId)?.name ?? projectId, depth: 0,
       count: groups.filter(g => g.projectId === projectId).reduce((n, g) => n + g.count, 0) });
-    if (collapsed.has(key)) continue;
-    function appendThreads(nodes: ThreadNode[], folder: FolderNode, headingKey: string, parentId: string | null, depth: number) {
+    function appendThreads(nodes: ThreadNode[], folder: FolderNode, headingKey: string, parentId: string | null, depth: number, retainedOnly = false, openedOnly = false) {
       const peers = nodes.map(node => node.thread.id);
       for (const node of nodes) {
+        if (openedOnly && !openedThreads.get(folder.id)?.has(node.thread.id)) continue;
+        if (retainedOnly && !retainedThreads.get(folder.id)?.has(node.thread.id)) continue;
         const key = `thread:${headingKey}:${node.thread.id}`;
+        const ownFolder = placements.get(node.thread.id)?.folderId ?? JSON.stringify([node.thread.projectId, groupedRepository(node.repository, links)?.id ?? null]);
         rows.push({ kind: "thread", key, node, depth, groupRepositoryId: folder.repository?.id ?? null, groupRepositoryLabel: folder.repository?.label ?? null,
-          folder: folder.id, scope: siblingKey(folder.id, parentId), peers });
-        if (!collapsed.has(key)) appendThreads(node.children, folder, headingKey, node.thread.id, depth + 1);
+          folder: folder.id, scope: siblingKey(folder.id, parentId), peers, compact: node.contextOnly && ownFolder !== folder.id });
+        appendThreads(node.children, folder, headingKey, node.thread.id, depth + 1, retainedOnly, openedOnly || collapsed.has(key));
       }
     }
-    function appendFolder(node: FolderNode, depth: number) {
+    function appendFolder(node: FolderNode, depth: number, retainedOnly = false, openedOnly = false) {
+      if (openedOnly && !openedFolders.has(node.id)) return;
+      if (retainedOnly && !retainedFolders.has(node.id)) return;
       const key = node.custom ? `folder:${node.id}` : `repository:${projectId}:${node.repository?.id ?? "unassigned"}`;
       rows.push({ kind: "folder", key, node, depth });
-      if (collapsed.has(key)) return;
-      for (const child of node.children) appendFolder(child, depth + 1);
-      if (node.group) appendThreads(orderedTree(node.group.roots, node.id, preferences), node, key, null, depth + 1);
+      const retainOnly = retainedOnly || collapsed.has(key);
+      for (const child of node.children) appendFolder(child, depth + 1, retainOnly, openedOnly);
+      if (node.group) appendThreads(orderedTree(node.group.roots, node.id, preferences), node, key, null, depth + 1, retainOnly, openedOnly);
     }
-    for (const node of trees.get(projectId)!) appendFolder(node, 1);
+    for (const node of trees.get(projectId)!) appendFolder(node, 1, false, collapsed.has(key));
   }
   for (const project of projects.filter(project => project.id !== enabledProject)) {
-    const plain = allThreads.filter(thread => thread.projectId === project.id && !thread.isHidden).sort((a, b) => b.updatedAt - a.updatedAt);
+    const plain = allThreads.filter(thread => thread.projectId === project.id && (!thread.isHidden || thread.id === props.activeThreadId)).sort((a, b) => b.updatedAt - a.updatedAt);
     if (!plain.length) continue;
     const key = `project:${project.id}`;
     rows.push({ kind: "heading", key, label: project.name, depth: 0, count: plain.length });
-    if (collapsed.has(key)) continue;
-    for (const thread of plain) rows.push({ kind: "thread", key: `plain:${thread.id}`, node: { thread, repository: null, children: [], contextOnly: false, updatedAt: thread.updatedAt }, depth: 1, groupRepositoryId: null, groupRepositoryLabel: null, folder: "", scope: "", peers: [] });
+    for (const thread of plain) {
+      if (collapsed.has(key) && thread.id !== props.activeThreadId) continue;
+      rows.push({ kind: "thread", key: `plain:${thread.id}`, node: { thread, repository: null, children: [], contextOnly: false, updatedAt: thread.updatedAt }, depth: 1, groupRepositoryId: null, groupRepositoryLabel: null, folder: "", scope: "", peers: [] });
+    }
   }
-  const start = Math.max(0, Math.floor(viewport.top / ROW_HEIGHT) - 6);
-  const end = Math.ceil((viewport.top + viewport.height) / ROW_HEIGHT) + 6;
+  let totalHeight = 0;
+  const positionedRows = rows.map((row, index) => {
+    const height = row.kind === "thread" && row.compact ? COMPACT_ROW_HEIGHT : ROW_HEIGHT;
+    const top = totalHeight; totalHeight += height;
+    const showsChildren = (rows[index + 1]?.depth ?? -1) > row.depth;
+    return { row, top, height, showsChildren };
+  });
+  const visibleRows = positionedRows.filter(({ top, height }) => top + height > viewport.top - 6 * ROW_HEIGHT && top < viewport.top + viewport.height + 6 * ROW_HEIGHT);
+  const fullTargets = new Set(visibleRows.flatMap(({ row }) => row.kind === "thread" && !row.compact ? [row.node.thread.id] : []));
   const shortcutTargets = new Set<string>();
-  const renderedRows = rows.slice(start, end).map(row => {
-    const shortcutTarget = row.kind === "thread" && !shortcutTargets.has(row.node.thread.id);
-    if (row.kind === "thread") shortcutTargets.add(row.node.thread.id);
-    return { row, shortcutTarget };
+  const renderedRows = visibleRows.map(positioned => {
+    const { row } = positioned;
+    const shortcutTarget = row.kind === "thread" && !shortcutTargets.has(row.node.thread.id) && (!row.compact || !fullTargets.has(row.node.thread.id));
+    if (shortcutTarget) shortcutTargets.add(row.node.thread.id);
+    return { ...positioned, shortcutTarget };
   });
   function finishDrag() {
     dragged.current = null;
@@ -340,10 +422,10 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
   function openFolderDialog(projectId: string, parentId: string | null, id?: string) {
     setFolderName(id ? preferences.customFolders[id].label : ""); setFolderDialog({ projectId, parentId, id });
   }
-  function renderFolder(row: Extract<ListRow, { kind: "folder" }>) {
+  function renderFolder(row: Extract<ListRow, { kind: "folder" }>, expanded: boolean) {
     const node = row.node;
     return <FolderRow id={node.id} label={node.label} path={node.repository?.path} count={node.count} depth={row.depth} custom={node.custom} nested={node.parentId !== null}
-      expanded={!collapsed.has(row.key)} toggle={() => toggle(row.key)} pinned={preferences.folderPins.includes(node.id)} drag={folderDrag(node)}
+      expanded={expanded} toggle={() => toggle(row.key)} pinned={preferences.folderPins.includes(node.id)} drag={folderDrag(node)}
       togglePin={() => setPreferences(old => ({ ...old, folderPins: old.folderPins.includes(node.id) ? old.folderPins.filter(key => key !== node.id) : [...old.folderPins, node.id] }))}
       sort={preferences.folderSort[node.id] ?? "updated"} setSort={mode => setPreferences(old => ({ ...old, folderSort: { ...old.folderSort, [node.id]: mode } }))}
       resetOrder={() => setPreferences(old => ({ ...old, folderOrder: { ...old.folderOrder, [folderScope(node.projectId, node.parentId)]: [] } }))}
@@ -381,22 +463,24 @@ function ProjectThreadList(props: PluginThreadListProps & { enabledProject: stri
       {status === "loading" || (!state && !error) ? <p className="wt-empty" role="status">Loading threads…</p>
         : status === "error" ? <p className="wt-empty" role="alert">Could not load threads.</p>
         : !rows.length ? <p className="wt-empty" role="status">No threads updated in this period.</p>
-        : <div role="tree" aria-label="Threads by repository" style={{ height: rows.length * ROW_HEIGHT, position: "relative" }}>
-          {renderedRows.map(({ row, shortcutTarget }, i) => <div key={row.key} className="wt-positioned" data-wt-smart-view={row.kind === "thread" && row.smart ? row.folder.slice(6) : undefined} style={{ top: (start + i) * ROW_HEIGHT }}>
+        : <div role="tree" aria-label="Threads by repository" style={{ height: totalHeight, position: "relative" }}>
+          {renderedRows.map(({ row, top, height, shortcutTarget, showsChildren }) => {
+            const revealed = row.kind === "heading" && row.smart ? preferences.smartExpanded.includes(row.smart) : !collapsed.has(row.key) || showsChildren;
+            return <div key={row.key} className="wt-positioned" data-wt-pinned={row.kind === "thread" && row.pinned ? "" : undefined} data-wt-smart-view={row.kind === "thread" && row.smart ? row.folder.slice(6) : undefined} style={{ top, height }}>
             {row.kind === "heading" ? <button className={`wt-heading wt-depth-${row.depth}`} style={{ paddingLeft: 8 + row.depth * 12 }} role="treeitem" aria-level={row.depth + 1}
-              aria-expanded={row.smart ? preferences.smartExpanded.includes(row.smart) : !collapsed.has(row.key)} title={row.subtitle}
+              aria-expanded={revealed} title={row.subtitle}
               onClick={() => { const view = row.smart; if (!view) toggle(row.key); else setPreferences(old => ({ ...old, smartExpanded: old.smartExpanded.includes(view) ? old.smartExpanded.filter(v => v !== view) : [...old.smartExpanded, view] })); }}>
-              <Icon name={(row.smart ? !preferences.smartExpanded.includes(row.smart) : collapsed.has(row.key)) ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
+              <Icon name={revealed ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0" />
               {row.depth === 1 ? <Icon name="Folder" className="size-4 shrink-0" /> : null}
               <span className="wt-heading-label">{row.label}</span><span className="wt-count">{row.count}</span>
-            </button> : row.kind === "folder" ? renderFolder(row)
+            </button> : row.kind === "folder" ? renderFolder(row, revealed)
               : <ThreadRow node={row.node} depth={row.depth} groupRepositoryId={row.groupRepositoryId} groupRepositoryLabel={row.groupRepositoryLabel} shortcutTarget={shortcutTarget}
-                enhanced={row.node.thread.projectId === enabledProject} drag={row.node.thread.projectId === enabledProject ? threadDrag(row) : {}} restore={row.node.thread.projectId === enabledProject && preferences.threadFolders[row.node.thread.id] ? () => locateThread(row.node.thread.id) : undefined} summary={row.summary}
-                expanded={!collapsed.has(row.key)} toggle={() => toggle(row.key)} active={props.activeThreadId === row.node.thread.id}
+                enhanced={row.node.thread.projectId === enabledProject} drag={row.node.thread.projectId === enabledProject && !row.pinned ? threadDrag(row) : {}} restore={row.node.thread.projectId === enabledProject && preferences.threadFolders[row.node.thread.id] ? () => locateThread(row.node.thread.id) : undefined} summary={row.summary}
+                compact={row.compact} expanded={revealed} branchCollapsed={collapsed.has(row.key)} toggle={() => toggle(row.key)} active={!row.compact && props.activeThreadId === row.node.thread.id}
                 onNavigate={props.onNavigate} repositories={repositories} onAssign={assign}
                 onPath={node => { setPathNode(node); setPath(node.repository?.path ?? node.thread.environment?.path ?? ""); setAssignmentError(null); }} />}
-
-          </div>)}
+            </div>;
+          })}
         </div>}
     </div>
     <Dialog open={folderDialog !== null} onOpenChange={open => { if (!open) setFolderDialog(null); }}>

@@ -74,10 +74,11 @@ export function buildGroups(
   now: number,
   groupWith: ReadonlyMap<string, Repository> = new Map(),
   placements: ReadonlyMap<string, { folderId: string; repository: Repository | null }> = new Map(),
+  activeThreadId: string | null = null,
 ): RepositoryGroup[] {
-  const visible = new Map(threads.filter(t => !t.isHidden).map(t => [t.id, t]));
+  const visible = new Map(threads.filter(t => !t.isHidden || t.id === activeThreadId).map(t => [t.id, t]));
   const cutoff = period === "all" ? -Infinity : now - Number(period) * 86_400_000;
-  const matching = new Set([...visible.values()].filter(t => t.updatedAt >= cutoff).map(t => t.id));
+  const matching = new Set([...visible.values()].filter(t => t.updatedAt >= cutoff || t.id === activeThreadId).map(t => t.id));
   const included = new Set(matching);
   for (const id of matching) {
     let parent = visible.get(id)?.parentThreadId;

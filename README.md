@@ -22,8 +22,14 @@ Choose the sidebar provider under **Settings → Appearance → Sidebar** if ano
 
 - Git repositories and worktrees are detected from each thread's environment, on the machine that owns it.
 - Children using the same environment inherit their parent's repository assignment.
+- A parent with children in other folders appears there as a compact, muted link without metadata or selected highlighting. Its own folder keeps the full row. Each copy can be expanded independently.
+- Thread subtitles show branch and checkout context without machine names. A fork icon with the **Git worktree** tooltip marks environments explicitly reported as worktrees by BB; plain checkouts and unknown environments have no worktree icon.
 - Clones with the same Git origin can share a folder while retaining their individual checkout labels. Folder actions can separate them again.
 - Create, nest, rename, pin, sort, and reorder virtual folders. Drag threads between folders and reorder siblings.
+- Collapsed repository and virtual folders keep busy threads and threads with unread activity or a host-reported BB status indicator visible. Their parent threads and nested folder paths remain visible for context; quiet branches stay hidden. The disclosure arrow points down while any of those rows are visible and points right when nothing remains. Collapsing a folder does not expand a session that was already collapsed. Rows disappear when work and attention clear, while the folder stays collapsed. **Updated** still applies.
+- The currently opened thread and its parent path remain in the tree even when idle, outside **Updated**, or beneath collapsed folders, parent threads, or a Project. Switching threads moves this exception to the newly opened thread without changing saved collapse preferences.
+- An opened internal helper thread also appears while selected; other hidden helper threads stay hidden.
+- **Pinned** at the top shows visible, unarchived pinned threads from every Project in BB's pin order. **Updated** does not hide these entries. Use the normal BB thread actions to pin or unpin; repository and virtual-folder entries remain in place.
 - Filter the selected Project by **Updated**: **Last 24 hours**, **Last 3 days**, **Last 7 days**, or **All**. Other Projects are not affected by this filter.
 - Open **Actions → Repository → Choose path…** when a thread starts in a parent directory and edits a nested repository.
 
@@ -36,6 +42,8 @@ bb thread-house clear --thread thr_example --json
 ```
 
 `clear` removes only this plugin's `repository` assignment. Commands reject threads outside the enabled Project. Git failures are displayed rather than silently treated as empty repositories.
+
+Repository discovery limits concurrent SDK and host reads to eight across sidebar requests. Temporary network failures retry up to three attempts per load, with 250 ms and 750 ms delays. Previously loaded repository folders remain visible during failures. After the final attempt, **Retry** starts a fresh load. Permanent errors remain visible without automatic retries. Backend logs identify the failed operation and the underlying network error when available.
 
 ## Develop
 
