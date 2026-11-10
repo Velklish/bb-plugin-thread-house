@@ -45,7 +45,7 @@ bb thread-house clear --thread thr_example --json
 
 `clear` removes only this plugin's `repository` assignment. Commands reject threads outside the enabled Project. Git failures are displayed rather than silently treated as empty repositories.
 
-Repository discovery limits concurrent SDK and host reads to eight across sidebar requests. Temporary network failures retry up to three attempts per load, with 250 ms and 750 ms delays. Previously loaded repository folders remain visible during failures. After the final attempt, **Retry** starts a fresh load. Permanent errors remain visible without automatic retries. A thread that can no longer be read is skipped, so the other threads still load. Backend logs identify the failed operation and the underlying network error when available.
+Repository discovery limits concurrent SDK and host reads to eight across sidebar requests. Temporary network failures retry up to three attempts per load, with 250 ms and 750 ms delays. Previously loaded repository folders remain visible during failures. After the final attempt, **Retry** starts a fresh load. Permanent errors remain visible without automatic retries. A thread that no longer exists is skipped, so the other threads still load. Backend logs identify the failed operation and the underlying network error when available.
 
 ## Develop
 

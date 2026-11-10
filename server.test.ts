@@ -66,16 +66,18 @@ describe("repository assignments", () => {
     });
     await expect(harness.behavior.callRpc("state", { threadIds: ["t"], environmentIds: ["env"] })).rejects.toThrow("fetch failed");
   });
-  it("keeps loading the sidebar when one thread can no longer be read", async () => {
+  it("keeps loading the sidebar when one thread no longer exists, and still reports other failures", async () => {
     const { harness, metadata } = await setup();
     metadata.set("t", { repository });
     harness.sdk.stub("threads.get", async ({ threadId }) => {
-      if (threadId === "gone") throw new Error("Thread not found");
+      if (threadId === "gone") throw new Error("HTTP 404: Thread not found");
+      if (threadId === "broken") throw new RangeError("Set maximum size exceeded");
       return makeThreadResponse({ id: threadId, projectId: "selected", environmentId: "env" });
     });
     const result = await harness.behavior.callRpc("state", { threadIds: ["gone", "t"], environmentIds: ["env"] }) as RepositoryState;
     expect(result.assignments.map(row => row.threadId)).toEqual(["t"]);
     expect(result.environments).toHaveLength(1);
+    await expect(harness.behavior.callRpc("state", { threadIds: ["broken", "t"], environmentIds: ["env"] })).rejects.toThrow("Set maximum size");
   });
   it("does not probe environments or change assignments outside the selected project", async () => {
     const { harness, calls, metadata } = await setup();

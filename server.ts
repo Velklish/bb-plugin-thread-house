@@ -59,8 +59,8 @@ export default async function plugin(bb: BbPluginApi) {
     const selectedThreads = (await Promise.all([...new Set(threadIds)].map(async threadId => {
       try { return [await read("threads.get", () => bb.sdk.threads.get({ threadId, signal }))]; }
       catch (cause) {
-        // One unreadable thread, such as one deleted a moment ago, must not empty the whole sidebar.
-        if (signal?.aborted || isTransientFailure(cause instanceof Error ? cause.message : String(cause))) throw cause;
+        // A thread deleted a moment ago must not fail the load for the others; any other failure still surfaces.
+        if (signal?.aborted || !/\b404\b|not found/i.test(cause instanceof Error ? cause.message : String(cause))) throw cause;
         return [];
       }
     }))).flat().filter(thread => thread.projectId === enabledProject);
