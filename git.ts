@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import type { z } from "zod";
@@ -45,6 +45,10 @@ export async function probeRepository(path: string, signal?: AbortSignal): Promi
     if (signal?.aborted) throw cause;
     const error = cause as Error & { stderr?: string };
     if (error.stderr?.includes("not a git repository")) return empty;
+    try { await stat(path); }
+    catch (statError) {
+      if ((statError as NodeJS.ErrnoException).code === "ENOENT") return { ...empty, error: error.stderr?.trim() || error.message, missing: true };
+    }
     return { ...empty, error: error.stderr?.trim() || error.message };
   }
 }

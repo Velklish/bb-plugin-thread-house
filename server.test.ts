@@ -101,6 +101,31 @@ describe("repository assignments", () => {
     await harness.behavior.callRpc("state", input);
     expect(calls).toHaveLength(1); expect(calls[0].hostId).toBe("host");
   });
+  it("treats missing environment paths as unassigned while keeping assignment errors", async () => {
+    const host = createFakePluginHost({
+      pluginId: "thread-house", settings: { project: "selected" }, agentSkillIds: ["thread-house"],
+      sdk: {
+        environments: { get: async () => ({ projectId: "selected", hostId: "host", path: "/missing" }) },
+        threads: {
+          get: async () => makeThreadResponse({ id: "t", projectId: "selected", environmentId: "env" }),
+          experimental_listPluginMetadata: async () => ({ threads: [{ threadId: "t", metadata: { repository } }] }),
+        },
+      },
+      experimental_callHostRpc: async () => [{ path: "/missing", root: null, commonDir: null, error: "missing path", missing: true }],
+    });
+    await plugin(host.bb); disposals.push(() => host.harness.lifecycle.dispose());
+    expect(await host.harness.behavior.callRpc("state", { threadIds: ["t"], environmentIds: ["env"] })).toEqual({ environments: [{ environmentId: "env", repository: null, error: null }], assignments: [{ threadId: "t", repository }] });
+    await expect(host.harness.behavior.callRpc("assign", { threadId: "t", path: "/missing" })).rejects.toThrow("missing path");
+  });
+  it("reports other environment probe errors", async () => {
+    const host = createFakePluginHost({
+      pluginId: "thread-house", settings: { project: "selected" }, agentSkillIds: ["thread-house"],
+      sdk: { environments: { get: async () => ({ projectId: "selected", hostId: "host", path: "/work" }) } },
+      experimental_callHostRpc: async () => [{ path: "/work", root: null, commonDir: null, error: "permission denied" }],
+    });
+    await plugin(host.bb); disposals.push(() => host.harness.lifecycle.dispose());
+    expect(await host.harness.behavior.callRpc("state", { threadIds: [], environmentIds: ["env"] })).toEqual({ environments: [{ environmentId: "env", repository: null, error: "permission denied" }], assignments: [] });
+  });
   it("persists assignments, publishes changes, and clears only its repository key", async () => {
     const { harness, metadata } = await setup(); metadata.set("t", { unrelated: "keep" });
     await harness.behavior.callRpc("assign", { threadId: "t", path: "/work/sample-app" });

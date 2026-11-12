@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -31,7 +31,16 @@ it("treats an existing non-Git directory as unassigned", async () => {
   expect(await probeRepository(directory)).toEqual({ path: directory, root: null, commonDir: null, error: null });
 });
 it("reports a missing checkout instead of pretending it is a non-Git directory", async () => {
-  expect((await probeRepository(join(directory, "missing"))).error).toContain("cannot change to");
+  const result = await probeRepository(join(directory, "missing"));
+  expect(result.error).toContain("cannot change to");
+  expect(result.missing).toBe(true);
+});
+it("reports an existing non-directory path as a Git error, not a missing checkout", async () => {
+  const file = join(directory, "file");
+  await writeFile(file, "");
+  const result = await probeRepository(file);
+  expect(result.error).toBeTruthy();
+  expect(result.missing).toBeUndefined();
 });
 it("rejects relative paths at the host boundary", async () => {
   expect((await probeRepository("../repo")).error).toBe("Repository path must be absolute.");

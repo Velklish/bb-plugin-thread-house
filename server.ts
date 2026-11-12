@@ -34,21 +34,22 @@ export default async function plugin(bb: BbPluginApi) {
   async function resolvePath(hostId: string, path: string, signal?: AbortSignal) {
     const key = JSON.stringify([hostId, path]);
     const cached = cache.get(key);
-    if (cached && Date.now() - cached.at < 300_000) return { repository: cached.repository, error: null };
+    if (cached && Date.now() - cached.at < 300_000) return { repository: cached.repository, error: null, missing: false };
     const [probe] = await read("host.probe", () => host.call("probe", { paths: [path] }, { hostId, signal }));
     const repository = probe.root && probe.commonDir ? {
       id: `${hostId}:${probe.commonDir}`, hostId, path: probe.root, label: basename(probe.root),
       ...(probe.origin ? { origin: probe.origin } : {}),
     } : null;
     if (!probe.error) cache.set(key, { repository, at: Date.now() });
-    return { repository, error: probe.error };
+    return { repository, error: probe.error, missing: probe.missing === true };
   }
   async function resolveEnvironment(environmentId: string, signal?: AbortSignal) {
     try {
       const env = await read("environments.get", () => bb.sdk.environments.get({ environmentId, signal }));
       if (!enabledProject || env.projectId !== enabledProject) return null;
       if (!env.path) return { environmentId, repository: null, error: null };
-      return { environmentId, ...await resolvePath(env.hostId, env.path, signal) };
+      const { repository, error, missing } = await resolvePath(env.hostId, env.path, signal);
+      return { environmentId, repository, error: missing ? null : error };
     } catch (cause) {
       if (signal?.aborted) throw cause;
       return { environmentId, repository: null, error: cause instanceof Error ? cause.message : String(cause) };

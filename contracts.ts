@@ -9,7 +9,7 @@ const ids = z.array(z.string().min(1)).max(200);
 const path = z.string().min(1).max(4096);
 export const probeSchema = z.object({
   path: z.string(), root: z.string().nullable(), commonDir: z.string().nullable(), error: z.string().nullable(),
-  origin: z.string().optional(),
+  origin: z.string().optional(), missing: z.boolean().optional(),
 }).strict();
 export const hostContract = defineRpcContract({
   probe: { input: z.object({ paths: z.array(path).max(200) }).strict(), output: z.array(probeSchema) },
