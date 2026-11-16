@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildGroups } from "./model";
-import { folderKey, moveOrder, orderedTree, parsePreferences, siblingKey, threadFolderTarget } from "./preferences";
+import { folderKey, placeThread, moveOrder, orderedTree, parsePreferences, siblingKey, threadFolderTarget } from "./preferences";
 import { buildFolderTree } from "./folders";
 import { NOW, repository, thread } from "./test-fixtures";
 
@@ -80,4 +80,17 @@ describe("sidebar layout preferences", () => {
     expect([...threads.values()].map(t => threadFolderTarget(t, threads, prefs))).toEqual(["a", "a", "a", "b"]);
     expect(threadFolderTarget(thread("loose"), threads, prefs)).toBeUndefined();
   });
+});
+
+it("removes legacy inherited copies, including hidden children, without moving independent branches", () => {
+  const threads = new Map([thread("parent"), thread("inherited", { parentThreadId: "parent" }),
+    thread("hidden", { parentThreadId: "parent", isHidden: true }), thread("independent", { parentThreadId: "parent" }),
+    thread("grandchild", { parentThreadId: "independent" })].map(t => [t.id, t]));
+  const prefs = parsePreferences({ threadFolders: { parent: "a", inherited: "a", hidden: "a", independent: "b", grandchild: "a" } });
+  const moved = placeThread(prefs, threads, "parent", "c");
+  expect(moved.threadFolders).toEqual({ parent: "c", independent: "b", grandchild: "a" });
+  expect(threadFolderTarget(threads.get("inherited")!, threads, moved)).toBe("c");
+  const restored = placeThread(moved, threads, "parent");
+  expect(restored.threadFolders).toEqual({ independent: "b", grandchild: "a" });
+  expect(threadFolderTarget(threads.get("inherited")!, threads, restored)).toBeUndefined();
 });

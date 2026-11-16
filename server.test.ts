@@ -6,7 +6,7 @@ import type { RepositoryState } from "./contracts";
 
 const disposals: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposals.splice(0)) await dispose(); });
-async function setup(origin?: string) {
+async function setup(origin?: string, probe?: () => Promise<{ path: string; root: string | null; commonDir: string | null; error: string | null }[]>) {
   const metadata = new Map<string, Record<string, unknown>>();
   const calls: { hostId: string; input: unknown }[] = [];
   const host = createFakePluginHost({
@@ -28,6 +28,7 @@ async function setup(origin?: string) {
     },
     experimental_callHostRpc: async call => {
       calls.push({ hostId: call.hostId, input: call.input });
+      if (probe) return probe();
       return [{ path: "/work/sample-app", root: "/work/sample-app", commonDir: "sample-app/.git", ...(origin ? { origin } : {}), error: null }];
     },
   });
@@ -59,11 +60,7 @@ describe("repository assignments", () => {
   it("propagates assignment network failures so the sidebar can retain and retry the assignment", async () => {
     const { harness, metadata } = await setup();
     metadata.set("t", { repository });
-    let reads = 0;
-    harness.sdk.stub("environments.get", async () => {
-      if (++reads === 2) throw new TypeError("fetch failed");
-      return { projectId: "selected", hostId: "host", path: "/work/sample-app" };
-    });
+    harness.sdk.stub("environments.get", async () => { throw new TypeError("fetch failed"); });
     await expect(harness.behavior.callRpc("state", { threadIds: ["t"], environmentIds: ["env"] })).rejects.toThrow("fetch failed");
   });
   it("keeps loading the sidebar when one thread no longer exists, and still reports other failures", async () => {
@@ -174,4 +171,66 @@ it("uses only public SDK surfaces", () => {
     "@radix-ui/react-dialog", "@radix-ui/react-dropdown-menu", "@radix-ui/react-context-menu", "class-variance-authority", "clsx", "tailwind-merge", "jsdom",
   ].map(name => new RegExp(`^${name}$`)) });
   expect(scan.violations).toEqual([]); expect(scan.privateDependencies).toEqual([]);
+});
+
+it("checks explicit assignments freshly after a directory becomes a Git repository", async () => {
+  let initialized = false;
+  const { harness, metadata } = await setup(undefined, async () => [{ path: repository.path,
+    root: initialized ? repository.path : null, commonDir: initialized ? "sample-app/.git" : null, error: null }]);
+  await harness.behavior.callRpc("state", { threadIds: [], environmentIds: ["env"] });
+  initialized = true;
+  await harness.behavior.callRpc("assign", { threadId: "t", path: repository.path });
+  expect(metadata.get("t")?.repository).toEqual(repository);
+});
+it("does not let a pre-refresh probe overwrite the refreshed cache", async () => {
+  let release!: (value: { path: string; root: string; commonDir: string; error: null }[]) => void;
+  const old = new Promise<{ path: string; root: string; commonDir: string; error: null }[]>(resolve => { release = resolve; });
+  let started!: () => void;
+  const probing = new Promise<void>(resolve => { started = resolve; });
+  let count = 0;
+  const { harness } = await setup(undefined, async () => {
+    if (++count === 1) { started(); return old; }
+    return [{ path: repository.path, root: "/new", commonDir: "/new/.git", error: null }];
+  });
+  const input = { threadIds: [], environmentIds: ["env"] };
+  const first = harness.behavior.callRpc("state", input);
+  await probing;
+  await harness.behavior.callRpc("state", { ...input, refresh: true });
+  release([{ path: repository.path, root: "/old", commonDir: "/old/.git", error: null }]);
+  await first;
+  const result = await harness.behavior.callRpc("state", input) as RepositoryState;
+  expect(result.environments[0].repository?.path).toBe("/new");
+});
+it("shares environment reads between discovery and saved assignments in one load", async () => {
+  const { harness, metadata } = await setup();
+  metadata.set("a", { repository }); metadata.set("b", { repository });
+  await harness.behavior.callRpc("state", { threadIds: ["a", "b"], environmentIds: ["env"] });
+  expect(harness.inspection.sdk.callsTo("environments.get")).toHaveLength(1);
+});
+
+it("shares in-flight Git probes across simultaneous state requests", async () => {
+  const { harness, calls } = await setup();
+  const input = { threadIds: [], environmentIds: ["env"] };
+  await Promise.all([harness.behavior.callRpc("state", input), harness.behavior.callRpc("state", input)]);
+  expect(calls).toHaveLength(1);
+});
+it("does not reuse a previously successful probe for an explicit assignment", async () => {
+  let root = "/old";
+  const { harness, metadata } = await setup(undefined, async () => [{ path: repository.path, root, commonDir: `${root}/.git`, error: null }]);
+  await harness.behavior.callRpc("state", { threadIds: [], environmentIds: ["env"] });
+  root = "/new";
+  await harness.behavior.callRpc("assign", { threadId: "t", path: repository.path });
+  expect(metadata.get("t")?.repository).toEqual(expect.objectContaining({ path: "/new" }));
+});
+
+it("retains a saved assignment when its Git probe times out without failing other environments", async () => {
+  let calls = 0;
+  const { harness, metadata } = await setup(undefined, async () => ++calls === 1
+    ? [{ path: repository.path, root: repository.path, commonDir: "sample-app/.git", error: null }]
+    : [{ path: "/slow", root: null, commonDir: null, error: "Git probe timed out after 8 seconds." }]);
+  const saved = { ...repository, id: "host:/slow/.git", path: "/slow", label: "slow" };
+  metadata.set("t", { repository: saved });
+  const result = await harness.behavior.callRpc("state", { threadIds: ["t"], environmentIds: ["env"] }) as RepositoryState;
+  expect(result.environments[0].repository).toEqual(repository);
+  expect(result.assignments).toEqual([{ threadId: "t", repository: saved }]);
 });

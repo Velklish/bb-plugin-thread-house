@@ -1,16 +1,15 @@
-import { basename } from "node:path";
 import { cliCommand, defineCli, PluginCliError, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { hostContract, repositorySchema, rpcContract } from "./contracts";
 import type { Repository } from "./model";
 import { isTransientFailure } from "./network";
+import { createRepositoryDiscovery } from "./repository-discovery";
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({ project: { type: "project", label: "Enabled Project", description: "Enable repository folders and agent trees for this Project. Other Projects use a plain thread list." } });
   let enabledProject = (await settings.get()).project;
-  settings.onChange(next => { enabledProject = next.project; cache.clear(); });
+  settings.onChange(next => { enabledProject = next.project; discovery.invalidate(); });
   bb.agents.configure(context => ({ tools: [], skills: context.project.id === enabledProject ? ["thread-house"] : [] }));
   const host = bb.hosts.experimental_client({ contract: hostContract });
-  const cache = new Map<string, { repository: Repository | null; at: number }>();
   let activeReads = 0;
   const waitingReads: (() => void)[] = [];
   async function read<T>(operation: string, run: () => Promise<T>): Promise<T> {
@@ -31,24 +30,16 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function resolvePath(hostId: string, path: string, signal?: AbortSignal) {
-    const key = JSON.stringify([hostId, path]);
-    const cached = cache.get(key);
-    if (cached && Date.now() - cached.at < 300_000) return { repository: cached.repository, error: null, missing: false };
+  const discovery = createRepositoryDiscovery(async (hostId, path, signal) => {
     const [probe] = await read("host.probe", () => host.call("probe", { paths: [path] }, { hostId, signal }));
-    const repository = probe.root && probe.commonDir ? {
-      id: `${hostId}:${probe.commonDir}`, hostId, path: probe.root, label: basename(probe.root),
-      ...(probe.origin ? { origin: probe.origin } : {}),
-    } : null;
-    if (!probe.error) cache.set(key, { repository, at: Date.now() });
-    return { repository, error: probe.error, missing: probe.missing === true };
-  }
-  async function resolveEnvironment(environmentId: string, signal?: AbortSignal) {
+    return probe;
+  });
+  async function resolveEnvironment(environmentId: string, getEnvironment: (id: string) => ReturnType<typeof bb.sdk.environments.get>, project: string, signal?: AbortSignal) {
     try {
-      const env = await read("environments.get", () => bb.sdk.environments.get({ environmentId, signal }));
-      if (!enabledProject || env.projectId !== enabledProject) return null;
+      const env = await getEnvironment(environmentId);
+      if (env.projectId !== project) return null;
       if (!env.path) return { environmentId, repository: null, error: null };
-      const { repository, error, missing } = await resolvePath(env.hostId, env.path, signal);
+      const { repository, error, missing } = await discovery.resolve(env.hostId, env.path, signal);
       return { environmentId, repository, error: missing ? null : error };
     } catch (cause) {
       if (signal?.aborted) throw cause;
@@ -56,7 +47,17 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
   async function state(threadIds: string[], environmentIds: string[], signal?: AbortSignal) {
-    if (!enabledProject) return { environments: [], assignments: [] };
+    const project = enabledProject;
+    if (!project) return { environments: [], assignments: [] };
+    const environmentReads = new Map<string, ReturnType<typeof bb.sdk.environments.get>>();
+    function getEnvironment(environmentId: string) {
+      let pending = environmentReads.get(environmentId);
+      if (!pending) {
+        pending = read("environments.get", () => bb.sdk.environments.get({ environmentId, signal }));
+        environmentReads.set(environmentId, pending);
+      }
+      return pending;
+    }
     const selectedThreads = (await Promise.all([...new Set(threadIds)].map(async threadId => {
       try { return [await read("threads.get", () => bb.sdk.threads.get({ threadId, signal }))]; }
       catch (cause) {
@@ -64,10 +65,10 @@ export default async function plugin(bb: BbPluginApi) {
         if (signal?.aborted || !/\b404\b|not found/i.test(cause instanceof Error ? cause.message : String(cause))) throw cause;
         return [];
       }
-    }))).flat().filter(thread => thread.projectId === enabledProject);
+    }))).flat().filter(thread => thread.projectId === project);
     const allowed = selectedThreads.map(thread => thread.id);
     const [environments, metadata] = await Promise.all([
-      Promise.all([...new Set(environmentIds)].map(id => resolveEnvironment(id, signal))),
+      Promise.all([...new Set(environmentIds)].map(id => resolveEnvironment(id, getEnvironment, project, signal))),
       allowed.length ? read("threads.experimental_listPluginMetadata", () => bb.sdk.threads.experimental_listPluginMetadata({ threadIds: allowed, signal })) : { threads: [] },
     ]);
     const saved = metadata.threads.flatMap(row => {
@@ -78,10 +79,10 @@ export default async function plugin(bb: BbPluginApi) {
       try {
         const thread = selectedThreads.find(thread => thread.id === row.threadId);
         if (!thread?.environmentId) return null;
-        const env = await read("environments.get", () => bb.sdk.environments.get({ environmentId: thread.environmentId!, signal }));
-        if (env.projectId !== enabledProject || env.hostId !== row.repository.hostId) return null;
-        const resolved = await resolvePath(env.hostId, row.repository.path, signal);
-        if (resolved.error && isTransientFailure(resolved.error)) throw new Error(resolved.error);
+        const env = await getEnvironment(thread.environmentId);
+        if (env.projectId !== project || env.hostId !== row.repository.hostId) return null;
+        const resolved = await discovery.resolve(env.hostId, row.repository.path, signal);
+        // A local Git failure must not discard saved placement or other environments. Host/SDK failures still throw.
         return { ...row, repository: resolved.repository ?? row.repository };
       } catch (cause) {
         if (signal?.aborted || isTransientFailure(cause instanceof Error ? cause.message : String(cause))) throw cause;
@@ -97,7 +98,7 @@ export default async function plugin(bb: BbPluginApi) {
     if (path !== null) {
       if (!thread.environmentId) throw new Error("This thread has no environment. Choose a thread with an environment.");
       const env = await bb.sdk.environments.get({ environmentId: thread.environmentId, signal });
-      const resolved = await resolvePath(env.hostId, path, signal);
+      const resolved = await discovery.resolve(env.hostId, path, signal, true);
       if (resolved.error) throw new Error(resolved.error);
       if (!resolved.repository) throw new Error("The path is not inside a Git repository.");
       repository = resolved.repository;
@@ -110,7 +111,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
   bb.rpc.register(rpcContract, {
     state: ({ threadIds, environmentIds, refresh }) => {
-      if (refresh) cache.clear();
+      if (refresh) discovery.invalidate();
       return state(threadIds, environmentIds);
     },
     assign: ({ threadId, path }) => assign(threadId, path),

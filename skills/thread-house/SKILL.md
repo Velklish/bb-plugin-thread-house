@@ -24,3 +24,10 @@ The sidebar's **Pinned** section shows visible, unarchived pinned threads from e
 Repository loading automatically retries temporary network failures up to three attempts and retains previously loaded folders. Use **Retry** after the final failure; backend logs include the failed SDK or host operation and its network cause when available.
 
 Reordering sibling threads switches their folder to **Manual** sorting; threads and folders that appear after a manual order was saved are shown above it, newest first. A thread without its own location follows the nearest ancestor that was moved to a folder, so agents started later stay with their parent.
+
+
+Use **Move to…** in thread or folder actions to organize without dragging. Children follow a moved parent unless they have a separate placement; **Automatic folder** preserves those independently placed children. **Undo** restores the last layout change in this window, without changing Updated or collapse preferences. Receiving a layout from another window clears Undo.
+
+Use Arrow Up/Down and Home/End to navigate the virtual tree, Arrow Left/Right to collapse, expand, or reach a parent, Enter to open a thread, and Tab to reach its actions. A collapsed folder's arrow offers **Expand** even if active or opened threads remain visible. **Show all** clears an Updated filter with no matches in the enabled Project.
+
+**Assign** always checks the path freshly, including after git init. Repository refreshes are coalesced during a load; the toolbar reports progress. Assignment errors offer **Edit path…** or **Dismiss**, while discovery errors offer **Retry**. A Git probe timeout is retried as a transient failure.

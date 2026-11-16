@@ -92,3 +92,21 @@ export function moveOrder(stored: readonly string[], visible: readonly string[],
   order.splice(order.indexOf(target) + Number(after), 0, id);
   return order;
 }
+
+// Only the root needs a placement. Clean up copies written by earlier versions, but stop at independently placed branches.
+export function placeThread(preferences: Preferences, threads: ReadonlyMap<string, ThreadNode["thread"]>, id: string, folder?: string, repository?: Repository | null): Preferences {
+  const root = threads.get(id);
+  if (!root) return preferences;
+  const previous = threadFolderTarget(root, threads, preferences);
+  const threadFolders = { ...preferences.threadFolders };
+  const pending = new Set([id]);
+  for (const parent of pending) for (const child of threads.values()) {
+    if (child.parentThreadId !== parent || pending.has(child.id)) continue;
+    const own = preferences.threadFolders[child.id];
+    if (own && own !== previous) continue;
+    delete threadFolders[child.id]; pending.add(child.id);
+  }
+  if (folder) threadFolders[id] = folder; else delete threadFolders[id];
+  return { ...preferences, threadFolders,
+    folderRepositories: folder && repository ? { ...preferences.folderRepositories, [folder]: repository } : preferences.folderRepositories };
+}

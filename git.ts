@@ -43,7 +43,8 @@ export async function probeRepository(path: string, signal?: AbortSignal): Promi
     return { path, root, commonDir, ...(origin ? { origin } : {}), error: null };
   } catch (cause) {
     if (signal?.aborted) throw cause;
-    const error = cause as Error & { stderr?: string };
+    const error = cause as Error & { stderr?: string; killed?: boolean };
+    if (error.killed) return { ...empty, error: "Git probe timed out after 8 seconds." };
     if (error.stderr?.includes("not a git repository")) return empty;
     try { await stat(path); }
     catch (statError) {

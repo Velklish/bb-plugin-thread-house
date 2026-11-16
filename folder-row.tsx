@@ -10,6 +10,7 @@ export type RowDrag = Pick<HTMLAttributes<HTMLElement>, "onDragStart" | "onDragO
 interface FolderProps {
   id: string; label: string; path?: string; depth: number; count: number; expanded: boolean; pinned: boolean;
   custom: boolean; nested: boolean; sort: SortMode; candidates: Repository[]; grouped: boolean; drag: RowDrag;
+  collapsed: boolean; tabIndex: number; move(): void;
   toggle(): void; togglePin(): void; setSort(mode: SortMode): void;
   groupWith(repository: Repository): void; separate(): void; resetOrder(): void;
   create(): void; rename(): void; remove(): void; toRoot(): void;
@@ -26,6 +27,7 @@ function FolderActions({ context = false, ...props }: FolderProps & { context?: 
   const RadioGroup = context ? Context.ContextMenuRadioGroup : Dropdown.DropdownMenuRadioGroup;
   const RadioItem = context ? Context.ContextMenuRadioItem : Dropdown.DropdownMenuRadioItem;
   return <>
+    <Item onSelect={props.move}>Move to…</Item>
     <Item onSelect={props.create}>New folder…</Item>
     {props.custom ? <><Item onSelect={props.rename}>Rename folder…</Item><Item onSelect={props.remove}>Remove folder</Item></> : null}
     <Item onSelect={props.togglePin}>{props.pinned ? "Unpin folder" : "Pin folder"}</Item>
@@ -62,16 +64,16 @@ export function FolderRow(props: FolderProps) {
     <div className="wt-row wt-folder" data-wt-folder-id={props.id} role="treeitem" aria-level={props.depth + 1} aria-expanded={props.expanded}
       onDragOver={props.drag.onDragOver} onDragLeave={props.drag.onDragLeave} onDrop={props.drag.onDrop}
       style={{ paddingLeft: 8 + props.depth * 12 }}>
-      <button className="wt-heading" title={props.path} onClick={props.toggle} draggable
+      <button data-wt-primary tabIndex={props.tabIndex} className="wt-heading" aria-label={`${props.collapsed ? "Expand" : "Collapse"} ${props.label}`} title={props.collapsed && props.expanded ? "Expand all threads. Active or opened threads remain visible while collapsed." : props.path} onClick={props.toggle} draggable
         onDragStart={props.drag.onDragStart} onDragEnd={props.drag.onDragEnd}>
-        <Icon name={props.expanded ? "ChevronDown" : "ChevronRight"} className="size-3.5 shrink-0" />
+        <Icon name={props.collapsed ? "ChevronRight" : "ChevronDown"} className="size-3.5 shrink-0" />
         <Icon name="Folder" className="size-4 shrink-0" />
         <span className="wt-heading-label">{props.label}</span>
         {props.pinned ? <span aria-label="Pinned folder"><Icon name="Pin" className="size-3 shrink-0" /></span> : null}
         <span className="wt-count">{props.count}</span>
       </button>
       <Dropdown.DropdownMenu><Dropdown.DropdownMenuTrigger asChild>
-        <button className="wt-icon-button wt-menu" aria-label={`Folder actions for ${props.label}`}><Icon name="MoreHorizontal" className="size-4" /></button>
+        <button tabIndex={props.tabIndex} className="wt-icon-button wt-menu" aria-label={`Folder actions for ${props.label}`}><Icon name="MoreHorizontal" className="size-4" /></button>
       </Dropdown.DropdownMenuTrigger><Dropdown.DropdownMenuContent align="start">
         <FolderActions {...props} />
       </Dropdown.DropdownMenuContent></Dropdown.DropdownMenu>

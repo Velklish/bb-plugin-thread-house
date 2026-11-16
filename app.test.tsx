@@ -18,7 +18,7 @@ beforeEach(() => {
   vi.stubGlobal("PointerEvent", MouseEvent);
 });
 afterEach(() => { for (const fn of cleanup.splice(0)) fn(); vi.useRealTimers(); vi.unstubAllGlobals(); });
-async function mount(stateProvider?: () => RepositoryState, threads?: ReturnType<typeof thread>[], sidebarShortcuts = {}, activeThreadId = "child") {
+async function mount(stateProvider?: () => RepositoryState | Promise<RepositoryState>, threads?: ReturnType<typeof thread>[], sidebarShortcuts = {}, activeThreadId = "child") {
   const pluginApp = await loadPluginApp(async () => app);
   const now = Date.now();
   const slot = renderSlot(pluginApp.threadLists[0], { activeThreadId, activeProjectId: "workspace", isCompactViewport: false, searchQuery: "", onNavigate: vi.fn() }, {
@@ -369,7 +369,7 @@ it("creates a category, nests a repository by dropping into it, and extracts it 
 it("drags a thread subtree into a category without changing its repository, and removes only the category", async () => {
   const slot = await mount(); const category = await createFolder(slot, "Active work");
   drop(slot.getByLabelText("Drag to organize parent"), category);
-  expect(Object.keys(preferences().threadFolders).sort()).toEqual(["child", "parent"]);
+  expect(Object.keys(preferences().threadFolders)).toEqual(["parent"]);
   expect(slot.getByText("child").closest(".wt-row")!.textContent).toContain("sample-app");
   expect(slot.inspection.rpcCalls.some(call => call.method === "assign")).toBe(false);
   fireEvent.contextMenu(slot.getByText("Active work").closest(".wt-folder")!);
@@ -658,4 +658,158 @@ it("adopts a layout saved by another window instead of overwriting it", async ()
   expect(localStorage.getItem(key)).toBe(saved);
   fireEvent.change(slot.getByLabelText("Activity period"), { target: { value: "7" } });
   expect(preferences()).toEqual(expect.objectContaining({ period: "7", customFolders: { "custom:other": { projectId: "workspace", label: "From another window" } } }));
+});
+
+it("coalesces realtime changes during a repository load and shows refreshing state", async () => {
+  let release!: (value: RepositoryState) => void;
+  const result = { environments: [{ environmentId: "env", repository, error: null }], assignments: [] };
+  let calls = 0, block = false;
+  const slot = await mount(async () => {
+    if (!block) return result;
+    calls++;
+    if (calls === 1) return new Promise<RepositoryState>(resolve => { release = resolve; });
+    return result;
+  });
+  block = true;
+  await slot.behavior.emitRealtime("changed", {});
+  for (let i = 0; i < 5; i++) await slot.behavior.emitRealtime("changed", {});
+  expect(calls).toBe(1);
+  expect(slot.getByLabelText("Refresh repositories").getAttribute("disabled")).not.toBeNull();
+  await act(async () => release(result));
+  await waitFor(() => expect(calls).toBe(2));
+  expect(slot.getByLabelText("Refresh repositories").getAttribute("disabled")).toBeNull();
+});
+it("preserves a separately placed child when its parent moves again", async () => {
+  localStorage.setItem(`${STORAGE_KEY}:workspace`, JSON.stringify({ smartExpanded: [], customFolders: {
+    "custom:a": { projectId: "workspace", label: "A" }, "custom:b": { projectId: "workspace", label: "B" }, "custom:c": { projectId: "workspace", label: "C" },
+  }, threadFolders: { parent: "custom:a", child: "custom:b" } }));
+  const slot = await mount();
+  drop(slot.getAllByLabelText("Drag to organize parent")[0], slot.getByText("C").closest(".wt-folder")!);
+  expect(preferences().threadFolders).toEqual({ parent: "custom:c", child: "custom:b" });
+});
+it("persists a local edit batched with a layout from another window", async () => {
+  const slot = await mount(); const key = `${STORAGE_KEY}:workspace`;
+  const saved = JSON.stringify({ period: "3", customFolders: { a: { projectId: "workspace", label: "Remote" } } });
+  localStorage.setItem(key, saved);
+  await act(async () => {
+    window.dispatchEvent(new StorageEvent("storage", { key, newValue: saved }));
+    fireEvent.change(slot.getByLabelText("Activity period"), { target: { value: "7" } });
+  });
+  expect(preferences().period).toBe("7");
+  expect(preferences().customFolders.a.label).toBe("Remote");
+});
+it("undoes folder removal without undoing the current activity filter", async () => {
+  const slot = await mount();
+  await createFolder(slot, "Working");
+  fireEvent.contextMenu(slot.getByText("Working").closest(".wt-folder")!);
+  fireEvent.click(await slot.findByText("Remove folder"));
+  expect(slot.queryByText("Working")).toBeNull();
+  fireEvent.change(slot.getByLabelText("Activity period"), { target: { value: "7" } });
+  fireEvent.click(slot.getByRole("button", { name: "Undo layout change" }));
+  expect(slot.getByText("Working")).toBeTruthy();
+  expect(preferences().period).toBe("7");
+});
+it("offers Show all when the enabled project's filter has no matches", async () => {
+  const slot = await mount(undefined, [thread("stale", { updatedAt: Date.now() - 10 * DAY })], {}, "none");
+  fireEvent.change(slot.getByLabelText("Activity period"), { target: { value: "1" } });
+  expect(slot.getByText("No threads updated in this period.")).toBeTruthy();
+  fireEvent.click(slot.getByRole("button", { name: "Show all" }));
+  expect(slot.getByText("stale")).toBeTruthy();
+  expect(preferences().period).toBe("all");
+});
+it("moves a thread through its action menu without dragging", async () => {
+  const slot = await mount();
+  await createFolder(slot, "Destination");
+  fireEvent.click(slot.getByLabelText("Actions for parent"));
+  fireEvent.click(await slot.findByText("Move to…"));
+  const select = await slot.findByLabelText("Destination folder");
+  const id = Object.keys(preferences().customFolders)[0];
+  fireEvent.change(select, { target: { value: id } });
+  fireEvent.click(slot.getByRole("button", { name: "Move" }));
+  expect(preferences().threadFolders).toEqual({ parent: id });
+  expect(slot.getByText("Destination").closest(".wt-folder")!.textContent).toContain("2");
+});
+it("navigates the virtual tree with End, Home and arrow keys without opening threads", async () => {
+  localStorage.setItem(`${STORAGE_KEY}:workspace`, JSON.stringify({ smartExpanded: [] }));
+  const threads = Array.from({ length: 60 }, (_, i) => thread(`task-${i}`, { updatedAt: Date.now() - i * 1000 }));
+  const slot = await mount(undefined, threads, {}, "none");
+  const first = slot.getByText("task-0").closest("a")!;
+  act(() => first.focus());
+  fireEvent.keyDown(first, { key: "End" });
+  await waitFor(() => expect(document.activeElement?.textContent).toContain("task-59"));
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+  await waitFor(() => expect(document.activeElement?.textContent).toContain("task-58"));
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowLeft" });
+  await waitFor(() => expect(document.activeElement?.textContent).toContain("sample-app"));
+  fireEvent.keyDown(document.activeElement!, { key: "Home" });
+  await waitFor(() => expect(document.activeElement?.textContent).toContain("Needs input"));
+  expect(slot.inspection.navigateCalls).toEqual([]);
+});
+
+it("moves folders from their menu and excludes descendants from destinations", async () => {
+  const slot = await mount();
+  await createFolder(slot, "Parent folder");
+  await createFolder(slot, "Child folder");
+  const parentId = Object.entries(preferences().customFolders).find(([, folder]) => (folder as { label: string }).label === "Parent folder")![0];
+  fireEvent.contextMenu(slot.getByText("Child folder").closest(".wt-folder")!);
+  fireEvent.click(await slot.findByText("Move to…"));
+  fireEvent.change(slot.getByLabelText("Destination folder"), { target: { value: parentId } });
+  fireEvent.click(slot.getByRole("button", { name: "Move" }));
+  expect(slot.getByText("Child folder").closest(".wt-folder")!.getAttribute("aria-level")).toBe("3");
+  fireEvent.contextMenu(slot.getByText("Parent folder").closest(".wt-folder")!);
+  fireEvent.click(await slot.findByText("Move to…"));
+  expect(slot.queryByRole("option", { name: "Parent folder / Child folder" })).toBeNull();
+  expect(slot.queryByRole("option", { name: "Parent folder" })).toBeNull();
+});
+it("announces Expand when a collapsed folder still reveals active threads", async () => {
+  const slot = await mount(undefined, [thread("busy", { status: "active" }), thread("quiet")], {}, "none");
+  fireEvent.click(slot.getByRole("button", { name: "Collapse sample-app" }));
+  const expand = slot.getByRole("button", { name: "Expand sample-app" });
+  expect(expand.querySelector('[data-icon="ChevronRight"]')).toBeTruthy();
+  expect(expand.getAttribute("title")).toContain("remain visible");
+  expect(slot.getByText("busy")).toBeTruthy(); expect(slot.queryByText("quiet")).toBeNull();
+  fireEvent.keyDown(expand, { key: "ArrowRight" });
+  expect(slot.getByText("quiet")).toBeTruthy();
+});
+
+it("does not steal focus from the composer when a formerly focused row moves", async () => {
+  localStorage.setItem(`${STORAGE_KEY}:workspace`, JSON.stringify({ smartExpanded: [] }));
+  const slot = await mount();
+  const input = document.createElement("textarea"); document.body.append(input);
+  try {
+    const link = slot.getByText("parent").closest("a")!;
+    act(() => { link.focus(); link.blur(); input.focus(); });
+    expect(document.activeElement).toBe(input);
+    const saved = JSON.stringify({ smartExpanded: [], customFolders: { "custom:moved": { projectId: "workspace", label: "Moved" } }, threadFolders: { parent: "custom:moved" } });
+    await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key: `${STORAGE_KEY}:workspace`, newValue: saved })); });
+    expect(document.activeElement).toBe(input);
+  } finally { input.remove(); }
+});
+it("opens Move to at the current placement for threads and nested folders", async () => {
+  localStorage.setItem(`${STORAGE_KEY}:workspace`, JSON.stringify({ smartExpanded: [], customFolders: {
+    "custom:a": { projectId: "workspace", label: "A" }, "custom:b": { projectId: "workspace", label: "B" },
+  }, folderParents: { "custom:b": "custom:a" }, threadFolders: { parent: "custom:b" } }));
+  const slot = await mount();
+  fireEvent.click(slot.getByLabelText("Actions for parent"));
+  fireEvent.click(await slot.findByText("Move to…"));
+  expect((slot.getByLabelText("Destination folder") as HTMLSelectElement).value).toBe("custom:b");
+  fireEvent.click(slot.getByRole("button", { name: "Move" }));
+  expect(preferences().threadFolders).toEqual({ parent: "custom:b" });
+  fireEvent.contextMenu(slot.getByText("B").closest(".wt-folder")!);
+  fireEvent.click(await slot.findByText("Move to…"));
+  expect((slot.getByLabelText("Destination folder") as HTMLSelectElement).value).toBe("custom:a");
+  fireEvent.click(slot.getByRole("button", { name: "Move" }));
+  expect(preferences().folderParents).toEqual({ "custom:b": "custom:a" });
+});
+
+it.each([true, false])("normalizes a saved Move destination after grouping or disappearance (grouped=%s)", async grouped => {
+  const saved = JSON.stringify(["workspace", "clone"]);
+  localStorage.setItem(`${STORAGE_KEY}:workspace`, JSON.stringify({ smartExpanded: [], threadFolders: { parent: saved }, groupWith: grouped ? { clone: repository } : {} }));
+  const slot = await mount();
+  fireEvent.click(slot.getByLabelText("Actions for parent"));
+  fireEvent.click(await slot.findByText("Move to…"));
+  expect((slot.getByLabelText("Destination folder") as HTMLSelectElement).value).toBe(grouped ? JSON.stringify(["workspace", repository.id]) : "");
+  fireEvent.click(slot.getByRole("button", { name: "Move" }));
+  expect(slot.queryByRole("dialog")).toBeNull();
+  expect(preferences().threadFolders).toEqual(grouped ? { parent: saved } : {});
 });
