@@ -18,7 +18,7 @@ export function createRepositoryDiscovery(probe: (hostId: string, path: string, 
       if (!fresh && !signal && cached && !cached.isolated && Date.now() - cached.at < 300_000) return cached.pending;
       const pending = probe(hostId, path, signal).then(result => {
         const repository = result.root && result.commonDir ? {
-          id: `${hostId}:${result.commonDir}`, hostId, path: result.root, label: basename(result.root),
+          id: `${hostId}:${result.commonDir}`, hostId, path: result.root, label: result.label ?? basename(result.root),
           ...(result.origin ? { origin: result.origin } : {}),
         } : null;
         if ((!repository || result.error) && entries.get(key)?.pending === pending) entries.delete(key);

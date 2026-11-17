@@ -27,20 +27,21 @@ export async function probeRepository(path: string, signal?: AbortSignal): Promi
   const empty = { path, root: null, commonDir: null, error: null };
   if (!isAbsolute(path)) return { ...empty, error: "Repository path must be absolute." };
   try {
-    const { stdout } = await run("git", ["-C", path, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"], {
-      signal, timeout: 8000, maxBuffer: 65_536, encoding: "utf8",
-    });
-    const [gitDir, worktreeRoot] = stdout.trimEnd().split("\n");
-    const commonDir = await realpath(gitDir);
-    const root = basename(commonDir) === ".git" ? dirname(commonDir) : worktreeRoot;
+    const options = { signal, timeout: 8000, maxBuffer: 65_536, encoding: "utf8" as const };
+    const [commonDir, root] = await Promise.all(["--git-common-dir", "--show-toplevel"].map(async flag => {
+      const { stdout } = await run("git", ["-C", path, "rev-parse", "--path-format=absolute", flag], options);
+      return realpath(stdout.replace(process.platform === "win32" ? /\r?\n$/ : /\n$/, ""));
+    }));
+    const commonName = basename(commonDir);
+    const label = commonName === ".git" ? basename(dirname(commonDir)) : commonName.replace(/\.git$/, "");
     let origin: string | undefined;
     try {
-      const result = await run("git", ["-C", root, "config", "--get", "remote.origin.url"], { signal, timeout: 8000, maxBuffer: 65_536, encoding: "utf8" });
+      const result = await run("git", ["--git-dir", commonDir, "config", "--get", "remote.origin.url"], options);
       origin = normalizeOrigin(result.stdout.trim());
     } catch (cause) {
       if (signal?.aborted || (cause as { code?: number }).code !== 1) throw cause;
     }
-    return { path, root, commonDir, ...(origin ? { origin } : {}), error: null };
+    return { path, root, commonDir, label, ...(origin ? { origin } : {}), error: null };
   } catch (cause) {
     if (signal?.aborted) throw cause;
     const error = cause as Error & { stderr?: string; killed?: boolean };

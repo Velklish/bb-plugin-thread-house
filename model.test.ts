@@ -19,6 +19,14 @@ describe("automatic origin grouping", () => {
   it("names the group after origin even when only release clones are available", () => {
     expect(groupedRepository(clone, repositoryLinks([clone]))).toEqual({ ...clone, label: "sample-app" });
   });
+  it("keeps the same origin folder when a worktree represents its clone", () => {
+    const short = { ...base, path: "/a/sample-app", id: "host:/a/sample-app/.git" };
+    const long = { ...base, path: "/projects/example/sample-app", id: "host:/projects/example/sample-app/.git" };
+    const worker = { ...short, path: "/projects/example/sandbox/sample-app-long-task-name" };
+    for (const checkout of [short, worker]) {
+      expect(groupedRepository(long, repositoryLinks([checkout, long]))?.id).toBe(short.id);
+    }
+  });
   it("does not conflate machines, different origin namespaces, or origin-less repositories", () => {
     const otherHost = { ...clone, id: "other-host", hostId: "other-host" };
     const otherOrigin = { ...base, id: "other-origin", origin: "git.example.com/other/sample-app" };

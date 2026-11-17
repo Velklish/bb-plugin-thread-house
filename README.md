@@ -21,6 +21,7 @@ Choose the sidebar provider under **Settings → Appearance → Sidebar** if ano
 ## Find and organize work
 
 - Git repositories and worktrees are detected from each thread's environment, on the machine that owns it.
+- Worktrees that share a Git common directory use the same automatic repository folder. The folder label comes from the shared Git directory; assignments resolve to the actual checkout path.
 - Children using the same environment inherit their parent's repository assignment.
 - A parent with children in other folders appears there as a compact, muted link without metadata or selected highlighting. Its own folder keeps the full row. Each copy can be expanded independently.
 - Thread subtitles show branch and checkout context without machine names. A fork icon with the **Git worktree** tooltip marks environments explicitly reported as worktrees by BB; plain checkouts and unknown environments have no worktree icon.
@@ -47,7 +48,7 @@ bb thread-house clear --thread thr_example --json
 
 `clear` removes only this plugin's `repository` assignment. Commands reject threads outside the enabled Project. Git failures are displayed rather than silently treated as empty repositories.
 
-An environment whose checkout directory no longer exists is shown without an automatically detected repository. Explicit repository assignments remain available, and choosing a missing path still reports an error.
+An environment whose checkout directory no longer exists is shown without an automatically detected repository. Explicit repository assignments remain available and use another discovered checkout of the same repository when possible. Choosing a missing path still reports an error.
 
 Repository discovery limits concurrent SDK and host reads to eight across sidebar requests. Temporary network failures retry up to three attempts per load, with 250 ms and 750 ms delays. Previously loaded repository folders remain visible during failures. After the final attempt, **Retry** starts a fresh load. The toolbar shows refresh progress and disables duplicate manual requests. Events arriving during a load are combined into one subsequent load; reconnecting clients resume automatically. Threads remain navigable while repository discovery loads.
 

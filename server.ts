@@ -75,21 +75,28 @@ export default async function plugin(bb: BbPluginApi) {
       const parsed = repositorySchema.safeParse(row.metadata.repository);
       return parsed.success ? [{ threadId: row.threadId, repository: parsed.data }] : [];
     });
-    const assignments = await Promise.all(saved.map(async row => {
+    const resolvedAssignments = await Promise.all(saved.map(async row => {
       try {
         const thread = selectedThreads.find(thread => thread.id === row.threadId);
         if (!thread?.environmentId) return null;
         const env = await getEnvironment(thread.environmentId);
         if (env.projectId !== project || env.hostId !== row.repository.hostId) return null;
         const resolved = await discovery.resolve(env.hostId, row.repository.path, signal);
-        // A local Git failure must not discard saved placement or other environments. Host/SDK failures still throw.
-        return { ...row, repository: resolved.repository ?? row.repository };
+        // A deleted checkout can resolve to a different, enclosing repository.
+        return { ...row, resolved: resolved.repository?.id === row.repository.id ? resolved.repository : null };
       } catch (cause) {
         if (signal?.aborted || isTransientFailure(cause instanceof Error ? cause.message : String(cause))) throw cause;
         return null;
       }
     }));
-    return { environments: environments.filter(row => row !== null), assignments: assignments.filter(row => row !== null) };
+    const liveRepositories = new Map<string, Repository>();
+    for (const repository of [...environments.map(row => row?.repository), ...resolvedAssignments.map(row => row?.resolved)]) {
+      if (repository) liveRepositories.set(repository.id, repository);
+    }
+    const assignments = resolvedAssignments.flatMap(row => row ? [{
+      threadId: row.threadId, repository: row.resolved ?? liveRepositories.get(row.repository.id) ?? row.repository,
+    }] : []);
+    return { environments: environments.filter(row => row !== null), assignments };
   }
   async function assign(threadId: string, path: string | null, signal?: AbortSignal) {
     const thread = await bb.sdk.threads.get({ threadId, signal });

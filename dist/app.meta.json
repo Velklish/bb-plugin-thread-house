@@ -18,7 +18,6 @@
     "radixDropdownMenu",
     "react",
     "reactDom",
-    "tailwindMerge",
-    "zod"
+    "tailwindMerge"
   ]
 }

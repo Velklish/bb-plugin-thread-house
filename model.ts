@@ -47,9 +47,14 @@ export function repositoryLinks(repositories: readonly Repository[], overrides: 
     const clones = origins.get(key) ?? []; clones.push(repository); origins.set(key, clones);
   }
   const links = new Map(overrides);
+  const repositoryPathLength = (repository: Repository) => {
+    const prefix = `${repository.hostId}:`;
+    const path = repository.id.startsWith(prefix) ? repository.id.slice(prefix.length) : repository.path;
+    return path.replace(/[\\/]\.git$/, "").length;
+  };
   for (const clones of origins.values()) {
     const label = clones[0].origin!.split("/").at(-1)!;
-    clones.sort((a, b) => Number(b.label === label) - Number(a.label === label) || a.path.length - b.path.length || a.id.localeCompare(b.id));
+    clones.sort((a, b) => Number(b.label === label) - Number(a.label === label) || repositoryPathLength(a) - repositoryPathLength(b) || a.id.localeCompare(b.id));
     const selected = clones.flatMap(clone => {
       const override = overrides.get(clone.id);
       if (!override || override.id === clone.id) return [];

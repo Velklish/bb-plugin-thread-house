@@ -6,7 +6,7 @@ import type { RepositoryState } from "./contracts";
 
 const disposals: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposals.splice(0)) await dispose(); });
-async function setup(origin?: string, probe?: () => Promise<{ path: string; root: string | null; commonDir: string | null; error: string | null }[]>) {
+async function setup(origin?: string, probe?: (path: string) => Promise<{ path: string; root: string | null; commonDir: string | null; error: string | null; missing?: boolean }[]>) {
   const metadata = new Map<string, Record<string, unknown>>();
   const calls: { hostId: string; input: unknown }[] = [];
   const host = createFakePluginHost({
@@ -28,7 +28,7 @@ async function setup(origin?: string, probe?: () => Promise<{ path: string; root
     },
     experimental_callHostRpc: async call => {
       calls.push({ hostId: call.hostId, input: call.input });
-      if (probe) return probe();
+      if (probe) return probe((call.input as { paths: string[] }).paths[0]);
       return [{ path: "/work/sample-app", root: "/work/sample-app", commonDir: "sample-app/.git", ...(origin ? { origin } : {}), error: null }];
     },
   });
@@ -233,4 +233,18 @@ it("retains a saved assignment when its Git probe times out without failing othe
   const result = await harness.behavior.callRpc("state", { threadIds: ["t"], environmentIds: ["env"] }) as RepositoryState;
   expect(result.environments[0].repository).toEqual(repository);
   expect(result.assignments).toEqual([{ threadId: "t", repository: saved }]);
+});
+
+it.each([
+  { root: null, commonDir: null, error: "missing path", missing: true },
+  { root: "/work", commonDir: "/work/.git", error: null },
+])("returns an available checkout when the saved path resolves to $root", async unavailable => {
+  const deleted = { ...repository, path: "/work/removed-worker" };
+  const { harness, metadata } = await setup(undefined, async path => path === deleted.path
+    ? [{ path, ...unavailable }]
+    : [{ path, root: path, commonDir: "sample-app/.git", error: null }]);
+  metadata.set("t", { repository: deleted });
+  const result = await harness.behavior.callRpc("state", { threadIds: ["t"], environmentIds: ["env"] }) as RepositoryState;
+  expect(result.assignments).toEqual([{ threadId: "t", repository }]);
+  expect(metadata.get("t")).toEqual({ repository: deleted });
 });

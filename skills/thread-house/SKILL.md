@@ -5,7 +5,7 @@ description: Assign a BB thread to the Git repository it works on, so Thread Hou
 
 Use `bb thread-house assign --path /absolute/repository/path` when a thread starts in a parent directory and works in a nested repository. The command defaults to the current thread; use `--thread <id>` to select one explicitly.
 
-Choose the repository this thread edits. Worktrees are supported. Repository assignments are thread metadata and do not change files or Git state.
+Choose the repository this thread edits. Linked worktrees share their repository's automatic folder. Repository assignments are thread metadata and do not change files or Git state.
 
 Use `bb thread-house clear` to remove the assignment and restore automatic discovery from the environment or parent thread.
 

@@ -24,8 +24,25 @@ it("resolves a real checkout and worktree to the same Git common directory", asy
   const worker = await probeRepository(worktree);
   expect(base.error).toBeNull(); expect(worker.error).toBeNull();
   expect(base.root).toBe(await realpath(repo));
-  expect(worker.root).toBe(base.root);
+  expect(worker.root).toBe(await realpath(worktree));
+  expect(worker.label).toBe(base.label);
   expect(worker.commonDir).toBe(base.commonDir);
+});
+it.each(["sample.git", "sample/.git"])("gives a checkout and worktree a shared label with separate Git metadata at %s", async name => {
+  const fixture = await mkdtemp(join(directory, "separate-"));
+  const checkout = join(fixture, process.platform === "win32" ? "checkout" : "checkout \r");
+  const metadata = join(fixture, name);
+  const linked = join(fixture, process.platform === "win32" ? "worker" : "worker\nline ");
+  await mkdir(join(fixture, "sample"));
+  await run("git", ["init", "-b", "main", "--separate-git-dir", metadata, checkout]);
+  await run("git", ["-C", checkout, "-c", "user.name=Plugin test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture"]);
+  await run("git", ["-C", checkout, "worktree", "add", "--detach", linked]);
+  await run("git", ["-C", checkout, "config", "extensions.worktreeConfig", "true"]);
+  await run("git", ["-C", checkout, "remote", "add", "origin", "https://github.com/example/sample.git"]);
+  await run("git", ["-C", linked, "config", "--worktree", "remote.origin.url", "https://github.com/example/worker.git"]);
+  const direct = await probeRepository(checkout), worker = await probeRepository(linked);
+  expect(direct).toMatchObject({ root: await realpath(checkout), commonDir: await realpath(metadata), label: "sample", origin: "github.com/example/sample", error: null });
+  expect(worker).toMatchObject({ root: await realpath(linked), commonDir: direct.commonDir, label: direct.label, origin: direct.origin, error: null });
 });
 it("treats an existing non-Git directory as unassigned", async () => {
   expect(await probeRepository(directory)).toEqual({ path: directory, root: null, commonDir: null, error: null });
