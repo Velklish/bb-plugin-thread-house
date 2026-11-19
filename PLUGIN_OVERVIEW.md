@@ -8,7 +8,7 @@ Use Group with… to override grouping; Keep checkouts separate restores the cur
 ## Find recent work
 
 Select Last 24 hours, Last 3 days, Last 7 days, or All. The filter uses BB's last-update timestamp. Parents stay visible when a child matches. Your period and expanded groups persist in this client.
-Needs input shows approvals and questions awaiting your response regardless of the period, with ancestor context. Recent shows up to ten root tasks, promoted by descendant updates, with aggregate need input and running counts. Workers are not listed separately in Recent. Layout preferences persist in this client.
+Needs input shows approvals and questions awaiting your response regardless of the period, with ancestor context. Recent shows up to ten root tasks with their child threads nested beneath them, promoted by descendant updates, with aggregate need input and running counts on each root. Orphan workers whose parent is hidden or archived are not listed. Layout preferences persist in this client.
 
 ## Know where agents work
 

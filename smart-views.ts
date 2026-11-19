@@ -34,7 +34,7 @@ export function buildSmartViews(threads: readonly PluginSidebarThread[], environ
   return {
     input: roots.flatMap(root => { const node = pending(root); return node ? [node] : []; }),
     inputCount: visible.filter(thread => thread.hasPendingInteraction).length,
-    recent: roots.filter(root => !root.thread.parentThreadId && root.updatedAt >= cutoff).slice(0, 10).map(root => ({ ...root, children: [] })),
+    recent: roots.filter(root => !root.thread.parentThreadId && root.updatedAt >= cutoff).slice(0, 10),
     summaries,
   };
 }

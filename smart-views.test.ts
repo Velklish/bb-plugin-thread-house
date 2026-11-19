@@ -8,10 +8,11 @@ it("shows pending descendants with their ancestor context even outside the recen
   expect(result.input[0].children.map(n => n.thread.id)).toEqual(["worker"]);
   expect(result.input[0].children[0].contextOnly).toBe(false);
 });
-it("Recent contains only roots, promotes a root after descendant activity and rolls up input and running counts", () => {
+it("Recent lists roots with their child trees, promotes a root after descendant activity and rolls up input and running counts", () => {
   const result = buildSmartViews([thread("root", { updatedAt: 1 }), thread("worker", { parentThreadId: "root", hasPendingInteraction: true }), thread("nested", { parentThreadId: "worker", status: "active" }), thread("older", { updatedAt: NOW - DAY - 1 })], environments, new Map(), "1", NOW);
   expect(result.recent.map(n => n.thread.id)).toEqual(["root"]);
-  expect(result.recent[0].children).toEqual([]);
+  expect(result.recent[0].children.map(n => n.thread.id)).toEqual(["worker"]);
+  expect(result.recent[0].children[0].children.map(n => n.thread.id)).toEqual(["nested"]);
   expect(result.summaries.get("root")).toEqual({ needsInput: 1, running: 1 });
 });
 it("does not list orphan workers, archived or hidden helpers in Recent", () => {

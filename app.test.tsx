@@ -499,13 +499,13 @@ it("restores thread locations from the destination after merging a manually chos
   expect(preferences().threadFolders).toEqual({});
   expect(slot.getByText("sample-app").closest("button")!.querySelector(".wt-count")!.textContent).toBe("1");
 });
-it("shows Needs input with waiting children and Recent with roots and aggregate activity only", async () => {
+it("shows Needs input with waiting children and Recent with roots, their children and aggregate activity", async () => {
   const slot = await mount(undefined, [thread("task", { updatedAt: 1 }), thread("waiting-worker", { parentThreadId: "task", hasPendingInteraction: true }), thread("running-worker", { parentThreadId: "task", status: "active" })]);
   expect(slot.getByText("Needs input").closest("button")!.querySelector(".wt-count")!.textContent).toBe("1");
   expect([...slot.container.querySelectorAll('[data-wt-smart-view="input"] [data-wt-thread-id]')].map(e => e.getAttribute("data-wt-thread-id"))).toEqual(["task", "waiting-worker"]);
   fireEvent.click(slot.getByText("Recent"));
   const recent = [...slot.container.querySelectorAll('[data-wt-smart-view="recent"] [data-wt-thread-id]')];
-  expect(recent.map(e => e.getAttribute("data-wt-thread-id"))).toEqual(["task"]);
+  expect(recent.map(e => e.getAttribute("data-wt-thread-id"))).toEqual(["task", "running-worker", "waiting-worker"]);
   expect(recent[0].textContent).toContain("1 need input · 1 running");
   const targets = [...slot.container.querySelectorAll("[data-sidebar-thread-shortcut-target]")].map(e => e.getAttribute("data-sidebar-thread-id"));
   expect(new Set(targets).size).toBe(targets.length);

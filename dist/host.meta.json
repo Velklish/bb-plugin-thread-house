@@ -1,12 +1,12 @@
 {
   "sdkMajor": 0,
-  "sdkVersion": "0.6.132",
+  "sdkVersion": "0.6.157",
   "artifactFormatVersion": 1,
   "pluginId": "thread-house",
   "pluginVersion": "0.1.0",
   "builtWith": {
-    "bbVersion": "0.49.0",
-    "pluginSdkVersion": "0.6.132"
+    "bbVersion": "0.50.1",
+    "pluginSdkVersion": "0.6.157"
   },
-  "artifactDigest": "7d95104699dd96ef546f110ba333ef3828a5097732284b2df2e4f4607cccfaeb"
+  "artifactDigest": "ca4e76fb22aa6de114b12b7c1df8a6e070f1bef1e7272ed6cae146398a5d2c98"
 }
